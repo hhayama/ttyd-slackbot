@@ -12,3 +12,4 @@
 - Run `pytest -q` after changes and share results.
 - Confirm before installing new dependencies.
 - Never write secrets, always use environment variables.
+- When using PandasAI in code use v3 functions and conventions. 

@@ -6,8 +6,17 @@ authors = [
     {name = "Your Name",email = "you@example.com"}
 ]
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.10,<3.12"
 dependencies = [
+    "pandas (>=2.0.3,<3.0.0)",
+    "pandasai (>=3.0.0,<4.0.0)",
+    "pandasai-litellm (>=0.0.1,<0.0.2)",
+    "python-dotenv (>=1.2.2,<2.0.0)",
+    "pandasai-sql[postgres] (>=0.1.7,<0.2.0)",
+    "pyyaml (>=6.0.3,<7.0.0)",
+    "matplotlib (>=3.7.0,<4.0.0)",
+    "psycopg2-binary (>=2.9.11,<3.0.0)",
+    "sqlalchemy (>=2.0.48,<3.0.0)"
 ]
 
 [tool.poetry]
