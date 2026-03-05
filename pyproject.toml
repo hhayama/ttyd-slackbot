@@ -26,6 +26,7 @@ packages = [{include = "ttyd_slackbot", from = "src"}]
 
 [project.scripts]
 ttyd-slackbot = "ttyd_slackbot.main:main"
+ttyd-semantic-refresh = "ttyd_slackbot.semantic_layer.refresh:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
