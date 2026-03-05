@@ -21,8 +21,8 @@ def _get_app() -> App:
     return App(token=token)
 
 
-def _handle_message(event: dict, _context) -> None:
-    """Handle incoming message events. Ignores bot messages; logs user text."""
+def _handle_message(event: dict, say, _context) -> None:
+    """Handle incoming message events. Ignores bot messages; logs user text; sends reply."""
     if event.get("bot_id"):
         return
     text = event.get("text") or ""
@@ -31,6 +31,10 @@ def _handle_message(event: dict, _context) -> None:
     if subtype in ("bot_message", "message_changed", "message_deleted"):
         return
     logger.info("Intake received message: %s", text[:200] + ("..." if len(text) > 200 else ""))
+
+    # TODO: Remove this placeholder when the Output subsystem is wired. Replace with
+    # the actual response from Engine -> Output (formatted answer, figures, etc.).
+    say("Thank you, we'll look into it!")
 
 
 def run() -> None:
