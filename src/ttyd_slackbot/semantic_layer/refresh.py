@@ -107,13 +107,24 @@ def _build_sqlalchemy_url(params: dict[str, Any]) -> str:
     )
 
 
-def _source_connection_placeholders() -> dict[str, str]:
-    """Connection dict with env var placeholders for pai.create() YAML (no secrets)."""
+def _source_connection_for_pai_create() -> dict[str, Any]:
+    """
+    Connection dict for pai.create().
+
+    PandasAI validates connection.port as int, so we resolve port from env.
+    Other fields use env var placeholders so the generated YAML stays safe.
+    """
     if os.environ.get("DATABASE_URL"):
-        return {"connection_string": "${DATABASE_URL}"}
+        from urllib.parse import urlparse
+
+        url = os.environ["DATABASE_URL"]
+        parsed = urlparse(url)
+        port = parsed.port if parsed.port is not None else 5432
+        return {"connection_string": "${DATABASE_URL}", "port": port}
+    port = int(os.environ.get("DB_PORT", "5432"))
     return {
         "host": "${DB_HOST}",
-        "port": "${DB_PORT}",
+        "port": port,
         "database": "${DB_NAME}",
         "user": "${DB_USER}",
         "password": "${DB_PASSWORD}",
@@ -199,7 +210,7 @@ def run_refresh(
 
         source = {
             "type": "postgres",
-            "connection": _source_connection_placeholders(),
+            "connection": _source_connection_for_pai_create(),
             "table": table_name,
             "view": False,
         }

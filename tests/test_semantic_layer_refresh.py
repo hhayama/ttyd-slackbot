@@ -11,7 +11,7 @@ from ttyd_slackbot.semantic_layer.refresh import (
     _dataset_path_exists,
     _get_connection_params,
     _pg_type_to_pandasai,
-    _source_connection_placeholders,
+    _source_connection_for_pai_create,
 )
 
 
@@ -103,20 +103,22 @@ def test_build_sqlalchemy_url_from_parts():
     assert "postgresql://u:p@h:5432/db" == url
 
 
-def test_source_connection_placeholders_with_db_vars():
-    """Placeholders use env var names when DATABASE_URL not set."""
-    with patch.dict(os.environ, {}, clear=True):
+def test_source_connection_for_pai_create_with_db_vars():
+    """Placeholders for host/user; port is int from env (PandasAI validation)."""
+    with patch.dict(os.environ, {"DB_PORT": "5433"}, clear=False):
         os.environ.pop("DATABASE_URL", None)
-    conn = _source_connection_placeholders()
+        conn = _source_connection_for_pai_create()
     assert conn.get("host") == "${DB_HOST}"
     assert conn.get("user") == "${DB_USER}"
+    assert conn.get("port") == 5433
 
 
-def test_source_connection_placeholders_with_database_url():
-    """Placeholders use DATABASE_URL when set."""
-    with patch.dict(os.environ, {"DATABASE_URL": "postgresql://x"}, clear=False):
-        conn = _source_connection_placeholders()
+def test_source_connection_for_pai_create_with_database_url():
+    """Uses DATABASE_URL placeholder and port (parsed or default)."""
+    with patch.dict(os.environ, {"DATABASE_URL": "postgresql://u:p@h:5434/db"}, clear=False):
+        conn = _source_connection_for_pai_create()
     assert conn.get("connection_string") == "${DATABASE_URL}"
+    assert conn.get("port") == 5434
 
 
 def test_dataset_path_exists_true(tmp_path):
