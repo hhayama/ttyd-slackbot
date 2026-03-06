@@ -24,7 +24,7 @@ def prepare_for_slack(
     Run output guardrails and formatting on engine result; return string for Slack.
 
     - Text: PII check (with conversation context). If unsafe, return block message.
-    - Table: format as markdown table, then PII check on formatted string.
+    - Table: format as ASCII box-drawn table, then PII check on formatted string.
     - Number / chart / error: convert to string, then PII check.
 
     Parameters

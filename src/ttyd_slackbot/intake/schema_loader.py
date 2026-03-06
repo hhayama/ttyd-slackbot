@@ -1,8 +1,8 @@
 """
 Load semantic layer schema YAMLs and build a summary string for guardrails.
 
-Used by the LLM to decide if a user query is answerable from the available
-datasets (guardrail 2). No database or PandasAI calls; YAML and filesystem only.
+Used by the LLM to interpret user queries (table/column names, aliases); not
+used for blocking. No database or PandasAI calls; YAML and filesystem only.
 """
 
 import os
@@ -16,8 +16,8 @@ def get_schema_summary(datasets_dir: Path | None = None, org: str = "ttyd") -> s
     Discover schema.yaml files under datasets/<org>/<name>/ and build a summary string.
 
     For each dataset: name, description, and for each column: name, type,
-    description, and any alias/aliases. Used by guardrails to validate that
-    the user's question is answerable from the semantic layer.
+    description, and any alias/aliases. Used by guardrails to interpret and
+    restate the user's question with correct table/column names.
 
     Parameters
     ----------

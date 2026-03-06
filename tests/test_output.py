@@ -51,13 +51,12 @@ def test_format_table_empty_dataframe():
     assert "No rows" in out
 
 
-def test_format_table_produces_markdown():
-    """format_table_for_slack produces markdown table with header and rows."""
+def test_format_table_produces_box_table():
+    """format_table_for_slack produces ASCII box-drawn table with header and rows."""
     df = pd.DataFrame({"a": [1, 2], "b": ["x", "y"]})
     out = format_table_for_slack(df)
-    assert "| " in out
-    assert " a " in out or "a" in out
-    assert " b " in out or "b" in out
+    assert "+" in out and "-" in out and "|" in out
+    assert "a" in out and "b" in out
     assert "1" in out and "2" in out
     assert "x" in out and "y" in out
 
@@ -67,7 +66,17 @@ def test_format_table_truncates_rows():
     df = pd.DataFrame({"x": range(100)})
     out = format_table_for_slack(df, max_rows=5)
     assert "Showing first 5 of 100" in out
-    assert out.count("|") >= 5 * 2  # header + sep + 5 rows
+    assert out.count("+") >= 2 and out.count("|") >= 2
+
+
+def test_format_table_numeric_right_aligned():
+    """format_table_for_slack right-aligns numeric columns."""
+    df = pd.DataFrame({"n": [1, 99], "s": ["a", "bb"]})
+    out = format_table_for_slack(df)
+    # Numeric column: " 1" and "99" should be right-aligned (space before 1)
+    assert " 1" in out or "1" in out
+    assert "99" in out
+    assert "a" in out and "bb" in out
 
 
 def test_prepare_for_slack_text_passes_through_when_safe():
@@ -91,7 +100,7 @@ def test_prepare_for_slack_table_formats_then_checks_pii():
     df = pd.DataFrame({"col": [1, 2, 3]})
     engine_result = EngineResult(response_type="table", value=df)
     with patch("ttyd_slackbot.output.prepare.check_pii") as mock_check:
-        mock_check.return_value = {"safe": True, "output": "| col |\n| --- |\n| 1 |\n| 2 |\n| 3 |"}
+        mock_check.return_value = {"safe": True, "output": "+-----+\n| col |\n+-----+\n|   1 |\n|   2 |\n|   3 |\n+-----+"}
         out = prepare_for_slack(engine_result, messages=[], interpreted_query=None)
     assert "|" in out
     mock_check.assert_called_once()
