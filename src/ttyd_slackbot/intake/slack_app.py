@@ -16,6 +16,7 @@ from ttyd_slackbot.engine import get_or_create_agent_for_thread, run_query
 from ttyd_slackbot.intake.guardrails import check_guardrails
 from ttyd_slackbot.intake.memory import append_message, get_messages
 from ttyd_slackbot.intake.schema_loader import get_schema_summary
+from ttyd_slackbot.output import prepare_for_slack
 
 logger = logging.getLogger(__name__)
 
@@ -72,9 +73,14 @@ def _handle_message(event: dict, say, _context) -> None:
     is_follow_up = any(m.get("role") == "assistant" for m in messages)
     try:
         agent = get_or_create_agent_for_thread(channel_id, thread_ts)
-        engine_response = run_query(agent, raw_query, is_follow_up=is_follow_up)
-        say(engine_response, thread_ts=thread_ts)
-        append_message(channel_id, thread_ts, "assistant", engine_response)
+        engine_result = run_query(agent, raw_query, is_follow_up=is_follow_up)
+        final_response = prepare_for_slack(
+            engine_result,
+            messages=messages,
+            interpreted_query=interpreted,
+        )
+        say(final_response, thread_ts=thread_ts)
+        append_message(channel_id, thread_ts, "assistant", final_response)
     except Exception as e:
         logger.exception("Engine failed for query %s: %s", raw_query[:100], e)
         fallback = "I couldn't run the query right now. Please try again later."

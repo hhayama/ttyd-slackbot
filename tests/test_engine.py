@@ -35,23 +35,25 @@ def test_create_agent_raises_when_no_datasets(tmp_path):
 
 
 def test_run_query_uses_chat_when_not_follow_up():
-    """run_query calls agent.chat when is_follow_up is False."""
+    """run_query calls agent.chat when is_follow_up is False and returns EngineResult."""
     mock_agent = MagicMock()
     mock_agent.chat.return_value = "42"
     mock_agent.follow_up.return_value = "nope"
     result = run_query(mock_agent, "What is total?", is_follow_up=False)
-    assert result == "42"
+    assert result.response_type == "text"
+    assert result.value == "42"
     mock_agent.chat.assert_called_once_with("What is total?")
     mock_agent.follow_up.assert_not_called()
 
 
 def test_run_query_uses_follow_up_when_is_follow_up():
-    """run_query calls agent.follow_up when is_follow_up is True."""
+    """run_query calls agent.follow_up when is_follow_up is True and returns EngineResult."""
     mock_agent = MagicMock()
     mock_agent.follow_up.return_value = "Based on the previous question, ..."
     mock_agent.chat.return_value = "nope"
     result = run_query(mock_agent, "And by region?", is_follow_up=True)
-    assert "Based on the previous" in result
+    assert result.response_type == "text"
+    assert "Based on the previous" in result.value
     mock_agent.follow_up.assert_called_once_with("And by region?")
     mock_agent.chat.assert_not_called()
 

@@ -12,15 +12,34 @@ import logging
 import os
 import re
 import tempfile
+import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+
+@dataclass
+class EngineResult:
+    """Structured result from the engine for the output layer.
+
+    Attributes
+    ----------
+    response_type : str
+        One of "text", "table", "number", "chart", "error".
+    value : str | Any
+        Raw value: str for text/error, DataFrame for table, number, or chart object.
+    """
+
+    response_type: str
+    value: Any
+
 logger = logging.getLogger(__name__)
 
 # Process-local cache: (channel_id, thread_ts) -> Agent instance
 _agents_by_thread: dict[tuple[str, str], Any] = {}
+_lock = threading.Lock()
 
 
 def _get_datasets_dir_and_org() -> tuple[Path, str]:
@@ -197,16 +216,37 @@ def get_or_create_agent_for_thread(
         The Agent instance for this thread (same instance on subsequent calls).
     """
     key = (channel_id, thread_ts)
-    if key not in _agents_by_thread:
-        _agents_by_thread[key] = create_agent(datasets_dir=datasets_dir, org=org)
-    return _agents_by_thread[key]
+    with _lock:
+        if key not in _agents_by_thread:
+            _agents_by_thread[key] = create_agent(datasets_dir=datasets_dir, org=org)
+        return _agents_by_thread[key]
+
+
+def _normalize_response(response: Any) -> EngineResult:
+    """Map PandasAI response object to EngineResult (response_type + value)."""
+    if response is None:
+        return EngineResult(response_type="text", value="")
+    value = getattr(response, "value", response)
+    if value is None:
+        return EngineResult(response_type="text", value="")
+    type_name = type(response).__name__
+    if "DataFrame" in type_name:
+        return EngineResult(response_type="table", value=value)
+    if "Chart" in type_name:
+        return EngineResult(response_type="chart", value=value)
+    if "Error" in type_name:
+        return EngineResult(response_type="error", value=str(value))
+    if "Number" in type_name:
+        return EngineResult(response_type="number", value=value)
+    # StringResponse or unknown: treat as text
+    return EngineResult(response_type="text", value=str(value))
 
 
 def run_query(
     agent: Any,
     query: str,
     is_follow_up: bool = False,
-) -> str:
+) -> EngineResult:
     """
     Run a natural-language query with the given Agent.
 
@@ -225,11 +265,11 @@ def run_query(
 
     Returns
     -------
-    str
-        Agent's text response.
+    EngineResult
+        Structured result with response_type ("text", "table", "number", "chart", "error") and value.
     """
     if is_follow_up:
         response = agent.follow_up(query)
     else:
         response = agent.chat(query)
-    return str(response) if response is not None else ""
+    return _normalize_response(response)
