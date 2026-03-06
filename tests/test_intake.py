@@ -2,11 +2,12 @@
 
 from unittest.mock import MagicMock, patch
 
+from ttyd_slackbot.engine import EngineResult
 from ttyd_slackbot.intake.slack_app import _handle_message
 
 
 def test_handle_message_logs_user_text_and_replies_with_success_when_guardrails_pass():
-    """Handler receives user message, runs guardrails; when allowed, sends placeholder and engine response."""
+    """Handler receives user message, runs guardrails; when allowed, sends placeholder and engine response via output layer."""
     event = {"text": "What is total revenue?", "channel": "C123", "ts": "1234567890.123456"}
     mock_say = MagicMock()
     guardrail_result = {
@@ -16,6 +17,7 @@ def test_handle_message_logs_user_text_and_replies_with_success_when_guardrails_
         "raw_query": "What is total revenue?",
     }
     mock_agent = MagicMock()
+    engine_result = EngineResult(response_type="text", value="The total revenue is $42,000.")
     with patch("ttyd_slackbot.intake.slack_app.logger") as mock_logger, patch(
         "ttyd_slackbot.intake.slack_app.check_guardrails", return_value=guardrail_result
     ), patch(
@@ -23,7 +25,7 @@ def test_handle_message_logs_user_text_and_replies_with_success_when_guardrails_
         return_value=mock_agent,
     ), patch(
         "ttyd_slackbot.intake.slack_app.run_query",
-        return_value="The total revenue is $42,000.",
+        return_value=engine_result,
     ) as mock_run_query:
         _handle_message(event, mock_say, None)
     mock_logger.info.assert_called_once()
