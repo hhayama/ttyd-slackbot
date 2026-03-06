@@ -1,0 +1,235 @@
+"""
+Run natural-language queries against all datasets in datasets/<org> via PandasAI v3 Agent.
+
+One Agent is created per Slack thread and reused so that follow-up questions use
+agent.follow_up() and retain conversation memory. Expects DB_* or DATABASE_URL and
+OPENAI_API_KEY (and load_dotenv() already called). Schema YAML placeholders like
+${DB_HOST} are resolved from the environment before PandasAI loads them (PandasAI
+does not resolve them when executing SQL).
+"""
+
+import logging
+import os
+import re
+import tempfile
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+logger = logging.getLogger(__name__)
+
+# Process-local cache: (channel_id, thread_ts) -> Agent instance
+_agents_by_thread: dict[tuple[str, str], Any] = {}
+
+
+def _get_datasets_dir_and_org() -> tuple[Path, str]:
+    """Return (datasets_dir, org) using same convention as schema_loader."""
+    base = os.environ.get("DATASETS_DIR")
+    datasets_dir = Path(base).resolve() if base else Path.cwd() / "datasets"
+    datasets_dir = datasets_dir.resolve()
+    org = os.environ.get("SEMANTIC_LAYER_ORG", "ttyd")
+    return datasets_dir, org
+
+
+def _list_dataset_names(datasets_dir: Path, org: str) -> list[str]:
+    """
+    List dataset names under datasets_dir/org that have a schema.yaml.
+
+    Returns
+    -------
+    list[str]
+        Sorted list of directory names (e.g. ["payments", "sessions", "subscriptions", "users"]).
+    """
+    org_path = datasets_dir / org
+    if not org_path.is_dir():
+        return []
+    names = []
+    for path in sorted(org_path.iterdir()):
+        if path.is_dir() and (path / "schema.yaml").exists():
+            names.append(path.name)
+    return names
+
+
+def _resolve_placeholders(obj: Any) -> Any:
+    """Recursively replace ${VAR} in strings with os.environ.get('VAR', '')."""
+    if isinstance(obj, dict):
+        return {k: _resolve_placeholders(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_resolve_placeholders(i) for i in obj]
+    if isinstance(obj, str):
+        return re.sub(
+            r"\$\{(\w+)\}",
+            lambda m: os.environ.get(m.group(1), ""),
+            obj,
+        )
+    return obj
+
+
+def _build_resolved_schemas_dir(datasets_dir: Path, org: str, names: list[str]) -> Path:
+    """
+    Write resolved schema.yaml files (with ${VAR} replaced from env) to a temp dir.
+
+    Structure: tempdir/datasets/<org>/<name>/schema.yaml. Returns the temp dir path
+    (caller must chdir into it so PandasAI sees datasets/ and can pai.load(org/name)).
+    """
+    tmpdir = Path(tempfile.mkdtemp(prefix="ttyd_schemas_"))
+    try:
+        for name in names:
+            src = datasets_dir / org / name / "schema.yaml"
+            with open(src, encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+            if data is None:
+                continue
+            resolved = _resolve_placeholders(data)
+            dest_dir = tmpdir / "datasets" / org / name
+            dest_dir.mkdir(parents=True)
+            with open(dest_dir / "schema.yaml", "w", encoding="utf-8") as f:
+                yaml.dump(resolved, f, default_flow_style=False, allow_unicode=True)
+        return tmpdir
+    except Exception:
+        import shutil
+
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise
+
+
+def create_agent(
+    datasets_dir: Path | None = None,
+    org: str | None = None,
+) -> Any:
+    """
+    Load all datasets under datasets/<org>, create and return a PandasAI v3 Agent.
+
+    Parameters
+    ----------
+    datasets_dir : Path or None
+        Root datasets directory. Defaults to DATASETS_DIR env or cwd/datasets.
+    org : str or None
+        Organization name (default SEMANTIC_LAYER_ORG or "ttyd").
+
+    Returns
+    -------
+    Agent
+        PandasAI Agent backed by the loaded datasets.
+
+    Raises
+    ------
+    ValueError
+        If no datasets are found.
+    """
+    _dir, _org = _get_datasets_dir_and_org()
+    datasets_dir = datasets_dir.resolve() if datasets_dir is not None else _dir
+    org = org or _org
+
+    names = _list_dataset_names(datasets_dir, org)
+    if not names:
+        raise ValueError(
+            "No datasets found. Add schema.yaml files under datasets/<org>/<name>/."
+        )
+
+    import pandasai as pai
+    from pandasai import Agent
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "OPENAI_API_KEY is required for the engine (PandasAI LLM). Set it in .env."
+        )
+    from pandasai_litellm.litellm import LiteLLM
+
+    llm = LiteLLM(model="gpt-4.1-mini", api_key=api_key)
+    pai.config.set({"llm": llm})
+
+    import shutil
+
+    from pandasai.helpers.filemanager import DefaultFileManager
+
+    resolved_root = _build_resolved_schemas_dir(datasets_dir, org, names)
+    resolved_datasets = resolved_root / "datasets"
+    # PandasAI's loader uses config.get().file_manager, which is created once with
+    # base_path = find_project_root() + "/datasets". So we must temporarily point
+    # file_manager at our resolved schemas dir so pai.load() reads resolved YAML.
+    original_config = pai.config.get()
+    custom_fm = DefaultFileManager()
+    custom_fm.base_path = str(resolved_datasets)
+    try:
+        pai.config.update({"file_manager": custom_fm})
+        paths = [f"{org}/{name}" for name in names]
+        loaded = []
+        for path in paths:
+            try:
+                obj = pai.load(path)
+                loaded.append(obj)
+            except Exception as e:
+                logger.warning("pai.load(%r) failed: %s", path, e)
+        if not loaded:
+            raise ValueError("Could not load any dataset.")
+        return Agent(loaded)
+    finally:
+        pai.config.update({"file_manager": original_config.file_manager})
+        shutil.rmtree(resolved_root, ignore_errors=True)
+
+
+def get_or_create_agent_for_thread(
+    channel_id: str,
+    thread_ts: str,
+    datasets_dir: Path | None = None,
+    org: str | None = None,
+) -> Any:
+    """
+    Return the Agent for this Slack thread, creating and caching one if needed.
+
+    Parameters
+    ----------
+    channel_id : str
+        Slack channel ID.
+    thread_ts : str
+        Slack thread_ts (or event ts for top-level).
+    datasets_dir : Path or None
+        Passed to create_agent when creating a new agent.
+    org : str or None
+        Passed to create_agent when creating a new agent.
+
+    Returns
+    -------
+    Agent
+        The Agent instance for this thread (same instance on subsequent calls).
+    """
+    key = (channel_id, thread_ts)
+    if key not in _agents_by_thread:
+        _agents_by_thread[key] = create_agent(datasets_dir=datasets_dir, org=org)
+    return _agents_by_thread[key]
+
+
+def run_query(
+    agent: Any,
+    query: str,
+    is_follow_up: bool = False,
+) -> str:
+    """
+    Run a natural-language query with the given Agent.
+
+    Use agent.chat(query) for the first question in a thread and agent.follow_up(query)
+    for subsequent questions so that conversation memory is retained.
+
+    Parameters
+    ----------
+    agent : Agent
+        PandasAI Agent (e.g. from get_or_create_agent_for_thread).
+    query : str
+        Natural-language question.
+    is_follow_up : bool, optional
+        If True, use agent.follow_up(query); otherwise use agent.chat(query).
+        Default False.
+
+    Returns
+    -------
+    str
+        Agent's text response.
+    """
+    if is_follow_up:
+        response = agent.follow_up(query)
+    else:
+        response = agent.chat(query)
+    return str(response) if response is not None else ""
