@@ -1,8 +1,10 @@
 """
 PII detection for output layer.
 
-Uses regex patterns for phone, email, SSN, driver's license, and optional LLM
-with conversation context (same as intake guardrails) for context-aware checks.
+Blocks only direct contact-style PII and bulk export of identifiers; aggregate
+metrics and limited analytical use of identifiers (e.g. user_id) are allowed,
+consistent with intake guardrails. Uses regex for phone, email, SSN, driver's
+license, and optional LLM with conversation context for context-aware checks.
 """
 
 import logging
@@ -51,6 +53,12 @@ def check_pii(
     """
     Check if text contains PII; optionally use LLM with conversation context.
 
+    Aggregate metrics (counts, sums, revenue by country, etc.) and limited
+    analytical use of identifiers (e.g. returning one user_id for "longest
+    subscriber") are considered safe. Only direct contact-style PII (names,
+    emails, phones, addresses, SSN, etc.) and bulk export of identifiers
+    are blocked.
+
     Parameters
     ----------
     text : str
@@ -75,7 +83,23 @@ def check_pii(
         return {"safe": True, "output": text or ""}
 
     # 1. Regex check first
-    if _regex_contains_pii(text):
+    # #region agent log
+    def _debug_log(payload: dict) -> None:
+        import json
+        import os as _os
+        payload.setdefault("sessionId", "35a474")
+        payload.setdefault("timestamp", __import__("time").time() * 1000)
+        for _path in ("/Users/hirokihayama/Documents/fpds/ttyd-slackbot/.cursor/debug-35a474.log", "/tmp/ttyd-slackbot-debug-35a474.log"):
+            try:
+                with open(_path, "a") as _f:
+                    _f.write(json.dumps(payload) + "\n")
+                break
+            except Exception:
+                continue
+    _regex_hit = _regex_contains_pii(text)
+    _debug_log({"runId": "pre-fix", "hypothesisId": "H3_H5", "location": "pii_check.py:check_pii", "message": "regex and llm path", "data": {"text_len": len(text), "text_preview": text[:80] if text else "", "regex_hit": _regex_hit, "use_llm": use_llm, "messages_is_none": messages is None, "has_api_key": bool(__import__("os").environ.get("OPENAI_API_KEY"))}})
+    # #endregion
+    if _regex_hit:
         logger.info("Output PII check failed: regex detected PII")
         return {"safe": False, "output": PII_BLOCK_MESSAGE}
 
@@ -86,6 +110,9 @@ def check_pii(
         api_key = os.environ.get("OPENAI_API_KEY")
         if api_key and messages is not None:
             llm_safe = _llm_pii_check(text, messages, interpreted_query, api_key, model)
+            # #region agent log
+            _debug_log({"runId": "pre-fix", "hypothesisId": "H1_H4", "location": "pii_check.py:after_llm", "message": "LLM result", "data": {"llm_safe": llm_safe}})
+            # #endregion
             if not llm_safe:
                 logger.info("Output PII check failed: LLM detected PII")
                 return {"safe": False, "output": PII_BLOCK_MESSAGE}
@@ -103,11 +130,18 @@ def _llm_pii_check(
     """Return False if LLM considers the text to contain PII."""
     from openai import OpenAI
 
-    system = """You are an output guardrail for a data analyst bot. Your only job is to decide if the given response text contains personally identifiable information (PII).
+    system = """You are an output guardrail for a data analyst bot. Decide if the given response text contains personally identifiable information (PII) that must be blocked.
 
-PII includes: full names, email addresses, phone numbers, physical addresses, social security numbers, driver's license numbers, passport numbers, financial account numbers, and similar identifiers.
+Reply UNSAFE only when the response contains:
+- Direct, contact-style PII: full names, email addresses, phone numbers, physical addresses, social security numbers, driver's license numbers, passport numbers, financial account numbers.
+- Bulk or list-style export of such data (e.g. a list of all user emails) or large sets of identifiers clearly intended for extraction/export.
 
-Reply with exactly one word: SAFE or UNSAFE. If the response contains any PII, reply UNSAFE. Otherwise reply SAFE."""
+Reply SAFE when the response contains any of the following (these are not PII in this context):
+- Aggregate metrics about users or entities: counts, sums, averages, breakdowns by country/region/segment (e.g. "number of users per country", "revenue by country", "distinct user_id counts", tables or charts showing such metrics).
+- The words "user_id", "users", or column names in analytical or aggregate context (e.g. a table with columns like country, user_count, or revenue).
+- One or a limited number of non-contact identifiers (e.g. user_id) in answer to an analytical question (e.g. "the user_id of the longest subscriber is 42", "top 5 user_ids by revenue"). Block only when the intent is clearly to extract or export large sets of identifiers or contact details.
+
+Reply with exactly one word: SAFE or UNSAFE."""
 
     user_parts = []
     if interpreted_query:
@@ -130,6 +164,20 @@ Reply with exactly one word: SAFE or UNSAFE. If the response contains any PII, r
             ],
         )
         content = (response.choices[0].message.content or "").strip().upper()
+        # #region agent log
+        def _log(p: dict) -> None:
+            import json
+            p.setdefault("sessionId", "35a474")
+            p.setdefault("timestamp", __import__("time").time() * 1000)
+            for _path in ("/Users/hirokihayama/Documents/fpds/ttyd-slackbot/.cursor/debug-35a474.log", "/tmp/ttyd-slackbot-debug-35a474.log"):
+                try:
+                    with open(_path, "a") as _f:
+                        _f.write(json.dumps(p) + "\n")
+                    break
+                except Exception:
+                    continue
+        _log({"runId": "pre-fix", "hypothesisId": "H4", "location": "pii_check.py:_llm_pii_check", "message": "LLM raw response", "data": {"raw_content": content[:100], "result_safe": "UNSAFE" not in content}})
+        # #endregion
         return "UNSAFE" not in content
     except Exception as e:
         logger.warning("LLM PII check failed, assuming safe: %s", e)

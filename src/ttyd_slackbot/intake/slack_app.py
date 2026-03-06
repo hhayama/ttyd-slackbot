@@ -40,7 +40,7 @@ def _get_app() -> App:
     return App(token=token)
 
 
-def _handle_message(event: dict, say, _context) -> None:
+def _handle_message(event: dict, say, context) -> None:
     """Handle incoming message events. Ignores bot messages; runs guardrails; sends reply."""
     if event.get("bot_id"):
         return
@@ -74,13 +74,20 @@ def _handle_message(event: dict, say, _context) -> None:
     try:
         agent = get_or_create_agent_for_thread(channel_id, thread_ts)
         engine_result = run_query(agent, raw_query, is_follow_up=is_follow_up)
-        final_response = prepare_for_slack(
+        text, file_bytes, file_name = prepare_for_slack(
             engine_result,
             messages=messages,
             interpreted_query=interpreted,
         )
-        say(final_response, thread_ts=thread_ts)
-        append_message(channel_id, thread_ts, "assistant", final_response)
+        if file_bytes is not None and file_name is not None:
+            context.client.files_upload_v2(
+                channel=channel_id,
+                content=file_bytes,
+                filename=file_name,
+                thread_ts=thread_ts,
+            )
+        say(text, thread_ts=thread_ts)
+        append_message(channel_id, thread_ts, "assistant", text)
     except Exception as e:
         logger.exception("Engine failed for query %s: %s", raw_query[:100], e)
         fallback = "I couldn't run the query right now. Please try again later."

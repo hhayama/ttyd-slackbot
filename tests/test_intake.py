@@ -81,3 +81,42 @@ def test_handle_message_ignores_bot_message_subtype():
         _handle_message(event, mock_say, None)
     mock_logger.info.assert_not_called()
     mock_say.assert_not_called()
+
+
+def test_handle_message_uploads_chart_via_files_upload_v2():
+    """When prepare_for_slack returns file_bytes and file_name, handler calls context.client.files_upload_v2 with correct args."""
+    event = {"text": "chart that", "channel": "C99", "ts": "111.222"}
+    mock_say = MagicMock()
+    mock_upload = MagicMock()
+    mock_context = MagicMock()
+    mock_context.client.files_upload_v2 = mock_upload
+    guardrail_result = {
+        "allowed": True,
+        "reason": None,
+        "interpreted_query": "Bar chart of data.",
+        "raw_query": "chart that",
+    }
+    chart_bytes = b"\x89PNG\r\n\x1a\n"
+    caption = "Here's your chart."
+    with patch("ttyd_slackbot.intake.slack_app.logger"), patch(
+        "ttyd_slackbot.intake.slack_app.check_guardrails", return_value=guardrail_result
+    ), patch(
+        "ttyd_slackbot.intake.slack_app.get_or_create_agent_for_thread",
+        return_value=MagicMock(),
+    ), patch(
+        "ttyd_slackbot.intake.slack_app.run_query",
+        return_value=EngineResult(response_type="chart", value=None),
+    ), patch(
+        "ttyd_slackbot.intake.slack_app.prepare_for_slack",
+        return_value=(caption, chart_bytes, "chart.png"),
+    ), patch("ttyd_slackbot.intake.slack_app.append_message"):
+        _handle_message(event, mock_say, mock_context)
+    mock_upload.assert_called_once_with(
+        channel="C99",
+        content=chart_bytes,
+        filename="chart.png",
+        thread_ts="111.222",
+    )
+    assert mock_say.call_count >= 1
+    say_calls = [c[0][0] for c in mock_say.call_args_list]
+    assert caption in say_calls
