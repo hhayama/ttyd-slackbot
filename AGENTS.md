@@ -12,4 +12,5 @@
 - Run `pytest -q` after changes and share results.
 - Confirm before installing new dependencies.
 - Never write secrets, always use environment variables.
-- When using PandasAI in code use v3 functions and conventions. 
+- When using PandasAI in code use v3 functions and conventions.
+- Engine: DB_* or DATABASE_URL must be set before running queries. PandasAI v3 resolves `${VAR}` in schema.yaml connection config from the environment (Option A). To verify: `poetry run python scripts/verify_pandasai_load.py`. 

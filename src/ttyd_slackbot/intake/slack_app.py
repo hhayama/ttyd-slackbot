@@ -12,6 +12,7 @@ import os
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
+from ttyd_slackbot.engine import get_or_create_agent_for_thread, run_query
 from ttyd_slackbot.intake.guardrails import check_guardrails
 from ttyd_slackbot.intake.memory import append_message, get_messages
 from ttyd_slackbot.intake.schema_loader import get_schema_summary
@@ -63,9 +64,22 @@ def _handle_message(event: dict, say, _context) -> None:
         return
 
     interpreted = result["interpreted_query"] or text
+    raw_query = result.get("raw_query") or text
     success_msg = f"There are no issues with your query. You asked: {interpreted}."
     say(success_msg, thread_ts=thread_ts)
     append_message(channel_id, thread_ts, "assistant", success_msg)
+
+    is_follow_up = any(m.get("role") == "assistant" for m in messages)
+    try:
+        agent = get_or_create_agent_for_thread(channel_id, thread_ts)
+        engine_response = run_query(agent, raw_query, is_follow_up=is_follow_up)
+        say(engine_response, thread_ts=thread_ts)
+        append_message(channel_id, thread_ts, "assistant", engine_response)
+    except Exception as e:
+        logger.exception("Engine failed for query %s: %s", raw_query[:100], e)
+        fallback = "I couldn't run the query right now. Please try again later."
+        say(fallback, thread_ts=thread_ts)
+        append_message(channel_id, thread_ts, "assistant", fallback)
 
 
 def run() -> None:
