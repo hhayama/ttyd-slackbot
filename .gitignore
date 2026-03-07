@@ -28,7 +28,6 @@ outputs/*
 Thumbs.db
 
 #PandasAI
-datasets/
 exports/
 pandasai.log
 

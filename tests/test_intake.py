@@ -6,8 +6,8 @@ from ttyd_slackbot.engine import EngineResult
 from ttyd_slackbot.intake.slack_app import _handle_message
 
 
-def test_handle_message_logs_user_text_and_replies_with_success_when_guardrails_pass():
-    """Handler receives user message, runs guardrails; when allowed, sends placeholder and engine response via output layer."""
+def test_handle_message_replies_with_output_layer_only_when_guardrails_pass():
+    """When guardrails pass, handler runs engine and replies once with output layer result only."""
     event = {"text": "What is total revenue?", "channel": "C123", "ts": "1234567890.123456"}
     mock_say = MagicMock()
     guardrail_result = {
@@ -26,19 +26,17 @@ def test_handle_message_logs_user_text_and_replies_with_success_when_guardrails_
     ), patch(
         "ttyd_slackbot.intake.slack_app.run_query",
         return_value=engine_result,
-    ) as mock_run_query:
+    ) as mock_run_query, patch(
+        "ttyd_slackbot.intake.slack_app.append_message",
+    ):
         _handle_message(event, mock_say, None)
     mock_logger.info.assert_called_once()
     call_args = mock_logger.info.call_args[0]
     assert "What is total revenue?" in call_args[1]
-    assert mock_say.call_count == 2
-    first_args, first_kw = mock_say.call_args_list[0]
-    assert "There are no issues with your query" in first_args[0]
-    assert "Total revenue from payments" in first_args[0]
-    assert first_kw.get("thread_ts") == "1234567890.123456"
-    second_args, second_kw = mock_say.call_args_list[1]
-    assert "42,000" in second_args[0]
-    assert second_kw.get("thread_ts") == "1234567890.123456"
+    assert mock_say.call_count == 1
+    say_args, say_kw = mock_say.call_args
+    assert "42,000" in say_args[0]
+    assert say_kw.get("thread_ts") == "1234567890.123456"
     mock_run_query.assert_called_once_with(
         mock_agent, "What is total revenue?", is_follow_up=False
     )

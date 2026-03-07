@@ -1,0 +1,51 @@
+name: payments
+source:
+  type: postgres
+  connection:
+    host: ${DB_HOST}
+    port: 5432
+    database: ${DB_NAME}
+    user: ${DB_USER}
+    password: ${DB_PASSWORD}
+  table: payments
+description: This table contains information about the payments made by users for their subscriptions.
+columns:
+  - name: payment_id
+    type: integer
+    description: Unique identifier for the each payment (Primary Key)
+  - name: subscription_id
+    type: integer
+    description: Foreign key linking to the subscriptions table
+  - name: payment_date
+    type: datetime
+    description: The date when the payment occurred (time granularity is day)
+  - name: amount_usd
+    type: float
+    description: The amount of the payment in USD
+  - name: method
+    type: string
+    description: The method of the payment (e.g., card, paypal, apple_pay, google_pay, etc.)
+  - name: total_revenue_usd
+    type: float
+    description: The total revenue in USD
+    expression: "SUM(amount_usd)"
+    aliases: 
+      - total revenue
+      - sales
+      - gross bookings
+      - total sales
+      - total bookings
+  - name: total_payments
+    type: integer
+    description: The total number of payments for a user
+    expression: "COUNT(payment_id)"
+    aliases: 
+     - total payments
+     - num payments
+
+group_by:
+  - payment_id
+  - subscription_id
+  - payment_date
+  - method
+  - amount_usd
