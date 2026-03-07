@@ -1,0 +1,36 @@
+name: subscriptions
+source:
+  type: postgres
+  connection:
+    host: ${DB_HOST}
+    port: 5432
+    database: ${DB_NAME}
+    user: ${DB_USER}
+    password: ${DB_PASSWORD}
+  table: subscriptions
+description: This table contains information about the subscriptions of users to different plans.
+
+columns:
+  - name: subscription_id
+    type: integer
+    description: Unique identifier for the subscription (Primary Key)
+  - name: user_id
+    type: integer
+    description: Foreign key linking to the users table
+  - name: plan
+    type: string
+    description: The subscription plan (e.g., free, monthly, annual)
+    alias: subscription_plan  # Alternative name
+  - name: start_date
+    type: datetime
+    description: Date when the subscription started
+  - name: end_date
+    type: datetime
+    description: Date when the subscription ended
+  - name: status
+    type: string
+    description: Current status of the subscription (e.g., active, canceled, expired)
+  - name: subscription_length_days
+    type: integer
+    description: Length of subscription in days
+    expression: "EXTRACT(DAY FROM (COALESCE(end_date, CURRENT_DATE) - start_date))"  # Calculated column

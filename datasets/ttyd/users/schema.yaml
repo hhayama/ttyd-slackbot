@@ -1,0 +1,24 @@
+name: users
+source:
+  type: postgres
+  connection:
+    host: ${DB_HOST}
+    port: 5432
+    database: ${DB_NAME}
+    user: ${DB_USER}
+    password: ${DB_PASSWORD}
+  table: users
+description: This table contains information about the users of the app, the device they signed up on, and the country of signup.
+columns:
+  - name: user_id
+    type: integer
+    description: Unique identifier for the each user (Primary Key)
+  - name: signup_date 
+    type: datetime
+    description: The date when the user signed up (time granularity is day)
+  - name: country
+    type: string
+    description: The country of the user. (e.g. US, EU, India, Rest)
+  - name: device_type
+    type: string
+    description: The type of device the user used to sign up (e.g., desktop, mobile, tablet)
