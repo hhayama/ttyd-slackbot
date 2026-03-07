@@ -55,27 +55,9 @@ def prepare_for_slack(
     file_bytes: bytes | None = None
     file_name: str | None = None
 
-    # #region agent log
-    def _debug_log(payload: dict) -> None:
-        import json
-        for _path in ("/Users/hirokihayama/Documents/fpds/ttyd-slackbot/.cursor/debug-35a474.log", "/tmp/ttyd-slackbot-debug-35a474.log"):
-            try:
-                payload.setdefault("sessionId", "35a474")
-                payload.setdefault("timestamp", __import__("time").time() * 1000)
-                with open(_path, "a") as _f:
-                    _f.write(json.dumps(payload) + "\n")
-                break
-            except Exception:
-                continue
-    _debug_log({"location": "prepare.py:entry", "message": "prepare_for_slack", "data": {"response_type": engine_result.response_type}})
-    # #endregion
-
     if engine_result.response_type == "table":
         text_to_check = format_table_for_slack(engine_result.value)
     elif engine_result.response_type == "chart":
-        # #region agent log
-        _debug_log({"runId": "pre-fix", "hypothesisId": "H1_H2", "location": "prepare.py:chart", "message": "chart branch", "data": {"has_save": hasattr(engine_result.value, "save") if engine_result.value else False, "messages_len": len(msg)}})
-        # #endregion
         caption = "Here's your chart."
         # Caption is fixed and cannot contain PII; skip LLM to avoid any context-driven false positive.
         pii_result = check_pii(
@@ -84,9 +66,6 @@ def prepare_for_slack(
             interpreted_query=None,
             use_llm=False,
         )
-        # #region agent log
-        _debug_log({"runId": "pre-fix", "hypothesisId": "H1", "location": "prepare.py:chart_caption_pii", "message": "caption PII result", "data": {"safe": pii_result.get("safe"), "output_is_block": pii_result.get("output") == PII_BLOCK_MESSAGE}})
-        # #endregion
         chart_value = engine_result.value
         if chart_value is not None and hasattr(chart_value, "save"):
             fd, path = tempfile.mkstemp(suffix=".png")
@@ -118,9 +97,6 @@ def prepare_for_slack(
                         logger.warning("Chart path read failed: %s", e)
             logger.warning("Chart value has no save() and not a readable path, returning string representation")
         text_to_check = str(chart_value) if chart_value is not None else ""
-        # #region agent log
-        _debug_log({"runId": "pre-fix", "hypothesisId": "H2", "location": "prepare.py:chart_fallback", "message": "chart fallback PII check", "data": {"fallback_text_len": len(text_to_check), "fallback_text_preview": text_to_check[:120]}})
-        # #endregion
         result = check_pii(
             text_to_check,
             messages=msg,

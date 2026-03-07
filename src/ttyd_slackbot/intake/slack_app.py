@@ -33,6 +33,27 @@ def _get_schema_summary() -> str:
     return _schema_summary
 
 
+def _get_sender_display_name(event: dict, context) -> str:
+    """
+    Resolve Slack user ID to display name via users_info; fall back to 'there' on failure.
+    """
+    user_id = event.get("user")
+    if not user_id:
+        return "there"
+    if context is None or not getattr(context, "client", None):
+        return "there"
+    try:
+        response = context.client.users_info(user=user_id)
+        user = response.get("user") if isinstance(response, dict) else None
+        if not user:
+            return "there"
+        profile = user.get("profile") or {}
+        name = profile.get("display_name") or user.get("real_name")
+        return (name or "").strip() or "there"
+    except Exception:
+        return "there"
+
+
 # Required env vars (loaded by caller via load_dotenv): SLACK_BOT_TOKEN, SLACK_APP_TOKEN
 def _get_app() -> App:
     token = os.environ.get("SLACK_BOT_TOKEN")
@@ -68,6 +89,13 @@ def _handle_message(event: dict, say, context) -> None:
     interpreted = result["interpreted_query"] or text
     raw_query = result.get("raw_query") or text
     is_follow_up = any(m.get("role") == "assistant" for m in messages)
+    if not is_follow_up:
+        name = _get_sender_display_name(event, context)
+        initial_message = (
+            f"Hi! Thanks for your message {name}. I'm loading the data and am looking into it."
+        )
+        say(initial_message, thread_ts=thread_ts)
+        append_message(channel_id, thread_ts, "assistant", initial_message)
     try:
         agent = get_or_create_agent_for_thread(channel_id, thread_ts)
         engine_result = run_query(agent, raw_query, is_follow_up=is_follow_up)

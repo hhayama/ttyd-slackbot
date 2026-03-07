@@ -43,6 +43,21 @@ def _regex_contains_pii(text: str) -> bool:
     )
 
 
+def _which_regex_matched(text: str) -> str | None:
+    """Return which PII pattern matched: 'phone', 'email', 'ssn', 'drivers_license', or None."""
+    if not text or not isinstance(text, str):
+        return None
+    if _PHONE.search(text):
+        return "phone"
+    if _EMAIL.search(text):
+        return "email"
+    if _SSN.search(text):
+        return "ssn"
+    if _DRIVERS_LICENSE.search(text):
+        return "drivers_license"
+    return None
+
+
 def check_pii(
     text: str,
     messages: list[dict[str, Any]] | None = None,
@@ -83,22 +98,16 @@ def check_pii(
         return {"safe": True, "output": text or ""}
 
     # 1. Regex check first
-    # #region agent log
-    def _debug_log(payload: dict) -> None:
-        import json
-        import os as _os
-        payload.setdefault("sessionId", "35a474")
-        payload.setdefault("timestamp", __import__("time").time() * 1000)
-        for _path in ("/Users/hirokihayama/Documents/fpds/ttyd-slackbot/.cursor/debug-35a474.log", "/tmp/ttyd-slackbot-debug-35a474.log"):
-            try:
-                with open(_path, "a") as _f:
-                    _f.write(json.dumps(payload) + "\n")
-                break
-            except Exception:
-                continue
     _regex_hit = _regex_contains_pii(text)
-    _debug_log({"runId": "pre-fix", "hypothesisId": "H3_H5", "location": "pii_check.py:check_pii", "message": "regex and llm path", "data": {"text_len": len(text), "text_preview": text[:80] if text else "", "regex_hit": _regex_hit, "use_llm": use_llm, "messages_is_none": messages is None, "has_api_key": bool(__import__("os").environ.get("OPENAI_API_KEY"))}})
-    # #endregion
+    _which = _which_regex_matched(text) if _regex_hit else None
+    # Don't block on placeholder emails (e.g. schema examples: user@example.com)
+    if _regex_hit and _which == "email":
+        _m = _EMAIL.search(text)
+        if _m and any(
+            _m.group(0).lower().endswith(d)
+            for d in ("@example.com", "@example.org", "@test.com")
+        ):
+            _regex_hit = False
     if _regex_hit:
         logger.info("Output PII check failed: regex detected PII")
         return {"safe": False, "output": PII_BLOCK_MESSAGE}
@@ -110,9 +119,6 @@ def check_pii(
         api_key = os.environ.get("OPENAI_API_KEY")
         if api_key and messages is not None:
             llm_safe = _llm_pii_check(text, messages, interpreted_query, api_key, model)
-            # #region agent log
-            _debug_log({"runId": "pre-fix", "hypothesisId": "H1_H4", "location": "pii_check.py:after_llm", "message": "LLM result", "data": {"llm_safe": llm_safe}})
-            # #endregion
             if not llm_safe:
                 logger.info("Output PII check failed: LLM detected PII")
                 return {"safe": False, "output": PII_BLOCK_MESSAGE}
@@ -140,6 +146,7 @@ Reply SAFE when the response contains any of the following (these are not PII in
 - Aggregate metrics about users or entities: counts, sums, averages, breakdowns by country/region/segment (e.g. "number of users per country", "revenue by country", "distinct user_id counts", tables or charts showing such metrics).
 - The words "user_id", "users", or column names in analytical or aggregate context (e.g. a table with columns like country, user_count, or revenue).
 - One or a limited number of non-contact identifiers (e.g. user_id) in answer to an analytical question (e.g. "the user_id of the longest subscriber is 42", "top 5 user_ids by revenue"). Block only when the intent is clearly to extract or export large sets of identifiers or contact details.
+- Responses that only describe what the user can ask about: lists of tables, column names, schema overview, example question types, or capabilities (e.g. "You can ask about users, sessions, revenue..."). These are not PII.
 
 Reply with exactly one word: SAFE or UNSAFE."""
 
@@ -164,20 +171,6 @@ Reply with exactly one word: SAFE or UNSAFE."""
             ],
         )
         content = (response.choices[0].message.content or "").strip().upper()
-        # #region agent log
-        def _log(p: dict) -> None:
-            import json
-            p.setdefault("sessionId", "35a474")
-            p.setdefault("timestamp", __import__("time").time() * 1000)
-            for _path in ("/Users/hirokihayama/Documents/fpds/ttyd-slackbot/.cursor/debug-35a474.log", "/tmp/ttyd-slackbot-debug-35a474.log"):
-                try:
-                    with open(_path, "a") as _f:
-                        _f.write(json.dumps(p) + "\n")
-                    break
-                except Exception:
-                    continue
-        _log({"runId": "pre-fix", "hypothesisId": "H4", "location": "pii_check.py:_llm_pii_check", "message": "LLM raw response", "data": {"raw_content": content[:100], "result_safe": "UNSAFE" not in content}})
-        # #endregion
         return "UNSAFE" not in content
     except Exception as e:
         logger.warning("LLM PII check failed, assuming safe: %s", e)
