@@ -39,7 +39,7 @@ def format_table_for_slack(
     Returns
     -------
     str
-        ASCII box-drawn table string (or code block for non-DataFrame), with truncation note if needed.
+        ASCII box-drawn table in a code block (or code block for non-DataFrame), with truncation note if needed.
     """
     try:
         import pandas as pd
@@ -106,7 +106,7 @@ def format_table_for_slack(
 
     if len(out) > max_chars:
         out = out[: max_chars - 80] + "\n\n*(Output truncated due to length)*"
-    return out
+    return f"```\n{out}\n```"
 
 
 def _code_block(s: str, max_chars: int = MAX_TABLE_CHARS) -> str:
