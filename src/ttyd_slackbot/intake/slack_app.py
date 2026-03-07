@@ -3,7 +3,8 @@ Slack app for the Intake subsystem.
 
 Uses Bolt with Socket Mode to receive message events. Applies LLM guardrails
 (PII and schema availability), maintains per-thread conversation memory, and
-replies with either a block reason or a success message that repeats the query.
+replies with either a block reason or the output-layer result only (engine
+result formatted for Slack).
 """
 
 import logging
@@ -66,10 +67,6 @@ def _handle_message(event: dict, say, context) -> None:
 
     interpreted = result["interpreted_query"] or text
     raw_query = result.get("raw_query") or text
-    success_msg = f"There are no issues with your query. You asked: {interpreted}."
-    say(success_msg, thread_ts=thread_ts)
-    append_message(channel_id, thread_ts, "assistant", success_msg)
-
     is_follow_up = any(m.get("role") == "assistant" for m in messages)
     try:
         agent = get_or_create_agent_for_thread(channel_id, thread_ts)
