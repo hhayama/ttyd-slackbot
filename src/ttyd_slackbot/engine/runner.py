@@ -8,6 +8,7 @@ ${DB_HOST} are resolved from the environment before PandasAI loads them (PandasA
 does not resolve them when executing SQL).
 """
 
+import json
 import logging
 import os
 import re
@@ -38,11 +39,19 @@ refer to the SQL Styling Guidelines below.
 - When a question is ambiguous (e.g., no timeframe provided), state the assumption you are making above the query.
 - Use Common Table Expressions (CTE)s with descriptive names instead of using subqueries.
 - Include comments explaining the logic about what the query is doing.  If there are CTEs, also include specific comments about what the CTE is intended to do as this will help with understanding the query.
+- When the user asks for data to be exported or returned as CSV (e.g. "export as csv", "give me this as a csv"), run the appropriate query to get the result, save the result DataFrame to a CSV file in the current working directory (e.g. with df.to_csv("exported_data.csv", index=False)), and respond with exactly: "CSV file saved as <filename>.csv" using the actual filename. CSV export is supported in this interface; do not refuse it.
 """
 
 
 # Regex for agent "CSV file saved as <filename>.csv" message.
 _CSV_SAVED_PATTERN = re.compile(r"(?i)CSV file saved as\s+(.+\.csv)")
+
+# When the user message indicates CSV export intent, we prepend this so the agent sees it in-turn.
+_CSV_INSTRUCTION_PREFIX = (
+    "The user wants the result as a CSV file. You must run the query, save the result DataFrame "
+    "to a CSV file in the current working directory (e.g. df.to_csv('exported_data.csv', index=False)), "
+    "and respond with exactly the line: CSV file saved as <filename>.csv (use the actual filename).\n\n"
+)
 
 
 @dataclass
@@ -299,6 +308,22 @@ def _try_consume_agent_csv_file(engine_result: EngineResult) -> EngineResult:
     return EngineResult(response_type="csv_file", value=(content, filename))
 
 
+def _user_wants_csv(query: str) -> bool:
+    """True if the user message indicates they want the result as a CSV file."""
+    if not query or not isinstance(query, str):
+        return False
+    q = query.strip().lower()
+    return "csv" in q and (
+        "as a csv" in q
+        or "as csv" in q
+        or "export" in q
+        or "send" in q
+        or "over as" in q
+        or q.endswith("csv")
+        or " in csv" in q
+    )
+
+
 def run_query(
     agent: Any,
     query: str,
@@ -325,10 +350,56 @@ def run_query(
     EngineResult
         Structured result with response_type ("text", "table", "number", "chart", "error") and value.
     """
+    # #region agent log
+    _log_path = Path("/Users/hirokihayama/Documents/fpds/ttyd-slackbot/.cursor/debug-c7e4f0.log")
+    try:
+        with open(_log_path, "a", encoding="utf-8") as _f:
+            _f.write(
+                json.dumps(
+                    {
+                        "sessionId": "c7e4f0",
+                        "hypothesisId": "query_and_mode",
+                        "location": "runner.py:run_query",
+                        "message": "run_query called",
+                        "data": {"query_snippet": (query or "")[:200], "is_follow_up": is_follow_up},
+                        "timestamp": __import__("time").time() * 1000,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
+    # #endregion
+
+    effective_query = query
+    if _user_wants_csv(query):
+        effective_query = _CSV_INSTRUCTION_PREFIX + query
+        # #region agent log
+        try:
+            with open(_log_path, "a", encoding="utf-8") as _f:
+                _f.write(
+                    json.dumps(
+                        {
+                            "sessionId": "c7e4f0",
+                            "hypothesisId": "csv_injection",
+                            "location": "runner.py:run_query",
+                            "message": "CSV instruction prefixed to query",
+                            "data": {"effective_query_snippet": effective_query[:280]},
+                            "timestamp": __import__("time").time() * 1000,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+        except Exception:
+            pass
+        # #endregion
+
     if is_follow_up:
-        response = agent.follow_up(query)
+        response = agent.follow_up(effective_query)
     else:
-        response = agent.chat(query)
+        response = agent.chat(effective_query)
     result = _normalize_response(response)
     result = _try_consume_agent_csv_file(result)
     return result

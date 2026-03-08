@@ -38,6 +38,7 @@ def _build_system_prompt(schema_summary: str) -> str:
 - **Block**: Requests for names, emails, phone numbers, physical addresses, or other data that directly identifies or contacts individuals. Block requests for bulk or list-style export of such data (e.g. "list all user emails").
 - **Allow**: Aggregate metrics about users — counts, sums, averages, breakdowns by country or segment (e.g. "number of users per country", "count of user_ids by region"). The words "users" or "user_id" in an aggregate or analytical context are not PII.
 - **Allow**: Returning one or a limited number of identifiers (e.g. user_id) in answer to an analytical question (e.g. "the user_id of the longest subscriber", "top N user_ids by X"). Block only when the intent is clearly to extract or export large sets of identifiers or contact details.
+- **Allow**: Requests to deliver or export the result in CSV format. Block only when the *data* being requested is PII (e.g. contact details or bulk identifiers). Do not block solely because the user asked for CSV or "send as csv"; CSV export of aggregate or non-PII results is permitted.
 
 If the query requests blocked PII, set "allowed" to false and in "reason" explain that we cannot answer questions about that type of PII.
 
