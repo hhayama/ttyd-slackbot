@@ -8,7 +8,6 @@ ${DB_HOST} are resolved from the environment before PandasAI loads them (PandasA
 does not resolve them when executing SQL).
 """
 
-import json
 import logging
 import os
 import re
@@ -40,6 +39,7 @@ refer to the SQL Styling Guidelines below.
 - Use Common Table Expressions (CTE)s with descriptive names instead of using subqueries.
 - Include comments explaining the logic about what the query is doing.  If there are CTEs, also include specific comments about what the CTE is intended to do as this will help with understanding the query.
 - When the user asks for data to be exported or returned as CSV (e.g. "export as csv", "give me this as a csv"), run the appropriate query to get the result, save the result DataFrame to a CSV file in the current working directory (e.g. with df.to_csv("exported_data.csv", index=False)), and respond with exactly: "CSV file saved as <filename>.csv" using the actual filename. CSV export is supported in this interface; do not refuse it.
+- When the user asks to see the SQL query that generated the previous result (e.g. chart, CSV, table), you may provide that SQL; there is no policy forbidding it.
 """
 
 
@@ -75,6 +75,10 @@ logger = logging.getLogger(__name__)
 # Process-local cache: (channel_id, thread_ts) -> Agent instance
 _agents_by_thread: dict[tuple[str, str], Any] = {}
 _lock = threading.Lock()
+
+# Last executed SQL per agent (keyed by id(agent) so one entry per thread).
+# PandasAI may expose SQL via last_code_generated (Python code containing SQL) or other attributes.
+_last_sql_by_agent: dict[int, str] = {}
 
 
 def _get_datasets_dir_and_org() -> tuple[Path, str]:
@@ -324,6 +328,78 @@ def _user_wants_csv(query: str) -> bool:
     )
 
 
+def _user_wants_sql(query: str) -> bool:
+    """True if the user is asking for the SQL query that generated the previous result."""
+    if not query or not isinstance(query, str):
+        return False
+    q = query.strip().lower()
+    if "sql" not in q:
+        return False
+    return (
+        "query" in q
+        or "generated" in q
+        or "that ran" in q
+        or "used" in q
+        or "show" in q
+        or "what" in q
+        or "give me" in q
+        or "that generated" in q
+        or "which query" in q
+        or "the query" in q
+        or "return" in q
+        or "get" in q
+        or "for that" in q
+    )
+
+
+# Regex to extract SQL from generated Python. PandasAI v3 with SQL uses execute_sql_query("""...""").
+_SQL_IN_TRIPLE_QUOTES = re.compile(
+    r'''(?:execute_sql_query|execute_query|query|sql)\s*\(\s*["']{{3}}(.*?)["']{{3}}''',
+    re.DOTALL | re.IGNORECASE,
+)
+_SQL_TRIPLE_DOUBLE = re.compile(r'"""([^"]*(?:SELECT|WITH|INSERT|UPDATE|DELETE|FROM)[^"]*)"""', re.DOTALL | re.IGNORECASE)
+_SQL_TRIPLE_SINGLE = re.compile(r"'''([^']*(?:SELECT|WITH|INSERT|UPDATE|DELETE|FROM)[^']*)'''", re.DOTALL | re.IGNORECASE)
+
+
+def _extract_sql_from_agent(agent: Any, response: Any = None) -> str | None:
+    """
+    Try to get the last executed SQL from the PandasAI agent or response.
+
+    Tries agent.last_query, response.query, then parses generated code (from
+    agent.last_generated_code or agent._state.last_code_generated) for
+    triple-quoted SQL in execute_sql_query(...) or similar. Returns None if no SQL found.
+    """
+    # Direct attributes (pandasai-sql or agent may expose these)
+    for src in (agent, response):
+        if src is None:
+            continue
+        for attr in ("last_query", "query", "sql", "last_sql"):
+            val = getattr(src, attr, None)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+    # PandasAI v3 Agent stores code on _state; it also exposes last_generated_code property.
+    code = None
+    for attr in ("last_generated_code", "last_code_generated"):
+        code = getattr(agent, attr, None)
+        if isinstance(code, str) and code.strip():
+            break
+    if not code or not code.strip():
+        state = getattr(agent, "_state", None)
+        if state is not None:
+            code = getattr(state, "last_code_generated", None)
+    if not isinstance(code, str) or not code.strip():
+        return None
+    # Prefer match inside execute_query("""...""") or similar
+    m = _SQL_IN_TRIPLE_QUOTES.search(code)
+    if m:
+        return m.group(1).strip()
+    for pattern in (_SQL_TRIPLE_DOUBLE, _SQL_TRIPLE_SINGLE):
+        m = pattern.search(code)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
 def run_query(
     agent: Any,
     query: str,
@@ -334,6 +410,8 @@ def run_query(
 
     Use agent.chat(query) for the first question in a thread and agent.follow_up(query)
     for subsequent questions so that conversation memory is retained.
+    When the user asks for the SQL that generated the previous result, returns stored SQL
+    in a code block without calling the agent.
 
     Parameters
     ----------
@@ -348,53 +426,22 @@ def run_query(
     Returns
     -------
     EngineResult
-        Structured result with response_type ("text", "table", "number", "chart", "error") and value.
+        Structured result with response_type ("text", "table", "number", "chart", "error", "csv_file") and value.
     """
-    # #region agent log
-    _log_path = Path("/Users/hirokihayama/Documents/fpds/ttyd-slackbot/.cursor/debug-c7e4f0.log")
-    try:
-        with open(_log_path, "a", encoding="utf-8") as _f:
-            _f.write(
-                json.dumps(
-                    {
-                        "sessionId": "c7e4f0",
-                        "hypothesisId": "query_and_mode",
-                        "location": "runner.py:run_query",
-                        "message": "run_query called",
-                        "data": {"query_snippet": (query or "")[:200], "is_follow_up": is_follow_up},
-                        "timestamp": __import__("time").time() * 1000,
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
-    # #endregion
+    # Return stored SQL in a code block when user asks for it (no agent call).
+    if _user_wants_sql(query):
+        stored = _last_sql_by_agent.get(id(agent))
+        if stored and stored.strip():
+            text = "Here is the SQL that was run:\n\n```sql\n" + stored.strip() + "\n```"
+            return EngineResult(response_type="text", value=text)
+        return EngineResult(
+            response_type="text",
+            value="No previous query in this thread yet. Ask a data question first, then ask for the SQL.",
+        )
 
     effective_query = query
     if _user_wants_csv(query):
         effective_query = _CSV_INSTRUCTION_PREFIX + query
-        # #region agent log
-        try:
-            with open(_log_path, "a", encoding="utf-8") as _f:
-                _f.write(
-                    json.dumps(
-                        {
-                            "sessionId": "c7e4f0",
-                            "hypothesisId": "csv_injection",
-                            "location": "runner.py:run_query",
-                            "message": "CSV instruction prefixed to query",
-                            "data": {"effective_query_snippet": effective_query[:280]},
-                            "timestamp": __import__("time").time() * 1000,
-                        },
-                        ensure_ascii=False,
-                    )
-                    + "\n"
-                )
-        except Exception:
-            pass
-        # #endregion
 
     if is_follow_up:
         response = agent.follow_up(effective_query)
@@ -402,4 +449,10 @@ def run_query(
         response = agent.chat(effective_query)
     result = _normalize_response(response)
     result = _try_consume_agent_csv_file(result)
+
+    # Store last executed SQL for this agent so we can return it when the user asks.
+    sql = _extract_sql_from_agent(agent, response)
+    if sql:
+        _last_sql_by_agent[id(agent)] = sql
+
     return result

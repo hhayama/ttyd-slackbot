@@ -1,19 +1,34 @@
 """
-LLM guardrails for Intake: interpret queries, enforce PII guardrail.
+Intake guardrails: regex-based PII blocklist and LLM query interpretation.
 
-Uses OpenAI (gpt-4.1-mini) with conversation history and schema summary to
-return a structured result: allowed, reason (if blocked), interpreted_query (if allowed),
-and raw_query (the latest user message from Slack).
+PII blocking is done via a regex blocklist on the latest user message (e.g. terms
+like driver's license, name, dob, birthday, ssn, email). Messages matching the
+blocklist are rejected before the LLM is called. The LLM (OpenAI gpt-4.1-mini) is
+used only for query interpretation: it restates the question using the semantic
+layer (table/column names) and returns allowed, reason, interpreted_query, and
+raw_query (the latest user message from Slack).
 """
 
 import json
 import logging
 import os
+import re
 from typing import Any
 
 from openai import OpenAI
 
 logger = logging.getLogger(__name__)
+
+# Regex to block messages that explicitly request PII-related terms (case-insensitive).
+# Matches: driver's license, name(s), dob, birthday(s), ssn(s), email(s).
+PII_BLOCK_PATTERN = re.compile(
+    r"(?:driver'?s?\s*license|\b(?:name|names|dob|birthday|birthdays|ssn|ssns|email|emails)\b)",
+    re.IGNORECASE,
+)
+PII_BLOCK_REASON = (
+    "We can't answer questions that request personal or contact information "
+    "(e.g. name, email, SSN, DOB)."
+)
 
 # Data analyst context prompt (passed to the LLM as role/behavior context).
 DATA_ANALYST_PROMPT = """
@@ -29,33 +44,24 @@ You are a Senior Data Analyst assisting adhoc queries about the database. Your p
 
 
 def _build_system_prompt(schema_summary: str) -> str:
-    """Build the full system prompt: data analyst role + schema + guardrails + output format."""
-    guardrails = """
-## Guardrail (you must enforce this)
-
-**No PII**: Block only questions that request direct, contact-style PII. Apply as follows:
-
-- **Block**: Requests for names, emails, phone numbers, physical addresses, or other data that directly identifies or contacts individuals. Block requests for bulk or list-style export of such data (e.g. "list all user emails").
-- **Allow**: Aggregate metrics about users — counts, sums, averages, breakdowns by country or segment (e.g. "number of users per country", "count of user_ids by region"). The words "users" or "user_id" in an aggregate or analytical context are not PII.
-- **Allow**: Returning one or a limited number of identifiers (e.g. user_id) in answer to an analytical question (e.g. "the user_id of the longest subscriber", "top N user_ids by X"). Block only when the intent is clearly to extract or export large sets of identifiers or contact details.
-- **Allow**: Requests to deliver or export the result in CSV format. Block only when the *data* being requested is PII (e.g. contact details or bulk identifiers). Do not block solely because the user asked for CSV or "send as csv"; CSV export of aggregate or non-PII results is permitted.
-
-If the query requests blocked PII, set "allowed" to false and in "reason" explain that we cannot answer questions about that type of PII.
-
+    """Build the full system prompt: data analyst role + schema + output format."""
+    prompt = """
 ## Semantic layer (use for interpretation)
 
-Use the semantic layer below to interpret and restate the user's question with correct table/column names and aliases. Do not block questions based on schema coverage; only block for PII.
+Use the semantic layer below to interpret and restate the user's question with correct table/column names and aliases.
+
+- Requests for the result as CSV or in export format (e.g. "can I get that as a csv?", "export as csv") are allowed. Set allowed to true and restate the query so the engine can return the data in the requested format (e.g. "Return the result of the previous query as a CSV file." or include "as CSV" in the interpreted_query).
 
 """ + (schema_summary or "(No schema loaded)") + """
 
 ## Your response format
 
 You must respond with a single JSON object only, no other text. Use this exact structure:
-- "allowed" (boolean): true if the query passes the guardrail (no PII requested); false otherwise.
-- "reason" (string or null): if allowed is false, a brief message to show the user (e.g. why PII is not allowed). If allowed is true, set to null.
-- "interpreted_query" (string or null): if allowed is true, a clear restatement of the user's question for the engine (correct table/column names, stated assumptions if any). If allowed is false, set to null.
+- "allowed" (boolean): true when you have successfully interpreted the query.
+- "reason" (string or null): set to null when allowed is true.
+- "interpreted_query" (string or null): when allowed is true, a clear restatement of the user's question for the engine (correct table/column names, stated assumptions if any).
 """
-    return DATA_ANALYST_PROMPT.strip() + "\n" + guardrails
+    return DATA_ANALYST_PROMPT.strip() + "\n" + prompt
 
 
 def _last_user_message(messages: list[dict[str, Any]]) -> str | None:
@@ -67,13 +73,24 @@ def _last_user_message(messages: list[dict[str, Any]]) -> str | None:
     return None
 
 
+def _blocked_by_pii_regex(text: str) -> bool:
+    """Return True if the text contains any blocked PII-related term."""
+    if not text or not text.strip():
+        return False
+    return PII_BLOCK_PATTERN.search(text) is not None
+
+
 def check_guardrails(
     messages: list[dict[str, Any]],
     schema_summary: str,
     model: str = "gpt-4.1-mini",
 ) -> dict[str, Any]:
     """
-    Call the LLM with conversation history and schema; return allowed, reason, interpreted_query, raw_query.
+    Run regex PII check, then LLM interpretation; return allowed, reason, interpreted_query, raw_query.
+
+    Messages containing certain PII-related terms (e.g. name, email, SSN, DOB,
+    driver's license) are blocked by regex before the LLM is called. Otherwise
+    the LLM interprets the query using the schema and returns a restatement.
 
     Parameters
     ----------
@@ -89,9 +106,17 @@ def check_guardrails(
     -------
     dict
         {"allowed": bool, "reason": str | None, "interpreted_query": str | None, "raw_query": str | None}.
-        raw_query is the latest user message from Slack. On LLM or parse failure, returns allowed=False with a generic reason.
+        raw_query is the latest user message from Slack. On PII regex match or LLM/parse failure, returns allowed=False with a reason.
     """
     raw_query = _last_user_message(messages)
+
+    if raw_query and _blocked_by_pii_regex(raw_query):
+        return {
+            "allowed": False,
+            "reason": PII_BLOCK_REASON,
+            "interpreted_query": None,
+            "raw_query": raw_query,
+        }
 
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:

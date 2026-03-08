@@ -1,10 +1,10 @@
 """
 Slack app for the Intake subsystem.
 
-Uses Bolt with Socket Mode to receive message events. Applies LLM guardrails
-(PII and schema availability), maintains per-thread conversation memory, and
-replies with either a block reason or the output-layer result only (engine
-result formatted for Slack).
+Uses Bolt with Socket Mode to receive message events. Applies intake guardrails
+(regex-based PII blocklist and LLM query interpretation), maintains per-thread
+conversation memory, and replies with either a block reason or the output-layer
+result only (engine result formatted for Slack).
 """
 
 import logging

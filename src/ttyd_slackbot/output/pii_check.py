@@ -19,14 +19,16 @@ PII_BLOCK_MESSAGE = (
 )
 
 # Regex patterns for common PII (US-centric but catches many international formats).
+# Require at least one separator so plain digit strings (revenue, counts, IDs) are not false positives.
 _PHONE = re.compile(
-    r"\+?\d{1,3}[-.\s]?\(?\d{2,4}\)?[-.\s]?\d{2,4}[-.\s]?\d{2,4}\d*|\d{3}[-.\s]\d{3}[-.\s]\d{4}"
+    r"\+?\d{1,3}[-.\s]\(?\d{2,4}\)?[-.\s]?\d{2,4}[-.\s]?\d{2,4}\d*|\d{3}[-.\s]\d{3}[-.\s]\d{4}"
 )
 _EMAIL = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
-_SSN = re.compile(r"\b\d{3}[-\s]?\d{2}[-\s]?\d{4}\b")
-# Driver's license: alphanumeric ID; matched segment must contain a digit (avoids "total revenue", "42,000").
+# Require dash or space so plain 9-digit numbers (revenue, counts, IDs) are not false positives.
+_SSN = re.compile(r"\b\d{3}[-\s]\d{2}[-\s]\d{4}\b")
+# Driver's license: alphanumeric ID; must contain both a letter and a digit (avoids "123456789", "42000000").
 _DRIVERS_LICENSE = re.compile(
-    r"\b(?=[A-Z0-9]*\d)[A-Z0-9]{4,}[\s-]?[A-Z0-9]{2,}\b",
+    r"\b(?=[A-Z0-9]*\d)(?=[A-Z0-9]*[A-Za-z])[A-Z0-9]{4,}[\s-]?[A-Z0-9]{2,}\b",
     re.IGNORECASE,
 )
 

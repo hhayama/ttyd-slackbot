@@ -26,26 +26,29 @@ def test_check_guardrails_parses_allowed_true_and_interpreted_query():
     assert "Total revenue" in (result["interpreted_query"] or "")
 
 
-def test_check_guardrails_parses_allowed_false_and_reason():
-    """When OpenAI returns allowed=false with reason, parsed result blocks with reason."""
+def test_check_guardrails_blocks_pii_terms_via_regex_no_llm_call():
+    """When the user message contains a blocked PII term (e.g. email), regex blocks and OpenAI is not called."""
     messages = [{"role": "user", "content": "What are user email addresses?"}]
-    schema = "Dataset: users\n  - user_id (integer): id\n"
-    fake_content = '{"allowed": false, "reason": "We cannot answer questions about PII such as emails.", "interpreted_query": null}'
-    with patch("ttyd_slackbot.intake.guardrails.os.environ", {"OPENAI_API_KEY": "test-key"}), patch(
-        "ttyd_slackbot.intake.guardrails.OpenAI"
-    ) as mock_openai_class:
-        mock_client = MagicMock()
-        mock_openai_class.return_value = mock_client
-        mock_client.chat.completions.create.return_value = MagicMock(
-            choices=[
-                MagicMock(message=MagicMock(content=fake_content))
-            ]
-        )
-        result = check_guardrails(messages, schema)
+    with patch("ttyd_slackbot.intake.guardrails.OpenAI") as mock_openai_class:
+        result = check_guardrails(messages, "Dataset: users\n")
     assert result["allowed"] is False
     assert result["reason"] is not None
-    assert "PII" in result["reason"] or "email" in result["reason"].lower()
+    assert "personal or contact" in result["reason"].lower() or "PII" in result["reason"]
     assert result["interpreted_query"] is None
+    assert result["raw_query"] == "What are user email addresses?"
+    mock_openai_class.assert_not_called()
+
+
+def test_check_guardrails_blocks_ssn_and_drivers_license_via_regex():
+    """Blocked terms like ssn and driver's license trigger regex block without calling LLM."""
+    for content in ["Show me SSN for users", "I need driver's license numbers"]:
+        messages = [{"role": "user", "content": content}]
+        with patch("ttyd_slackbot.intake.guardrails.OpenAI") as mock_openai_class:
+            result = check_guardrails(messages, "Dataset: users\n")
+        assert result["allowed"] is False, f"Expected block for: {content!r}"
+        assert result["reason"] is not None
+        assert result["interpreted_query"] is None
+        mock_openai_class.assert_not_called()
 
 
 def test_check_guardrails_invalid_json_returns_not_allowed():

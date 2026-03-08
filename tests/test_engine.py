@@ -9,6 +9,7 @@ from ttyd_slackbot.engine.runner import (
     EngineResult,
     _list_dataset_names,
     _try_consume_agent_csv_file,
+    _user_wants_sql,
     create_agent,
     get_or_create_agent_for_thread,
     run_query,
@@ -160,3 +161,105 @@ def test_run_query_consumes_csv_file_when_agent_returns_saved_message(tmp_path):
     assert content == b"col1,col2\n1,2\n"
     assert filename == "report.csv"
     assert not csv_path.exists()
+
+
+def test_user_wants_sql_detects_sql_request():
+    """_user_wants_sql returns True for messages asking for the SQL that was run."""
+    assert _user_wants_sql("what SQL query generated that?") is True
+    assert _user_wants_sql("show me the sql") is True
+    assert _user_wants_sql("can I get the SQL that ran?") is True
+    assert _user_wants_sql("can I get the SQL for that?") is True
+    assert _user_wants_sql("what is total revenue?") is False
+    assert _user_wants_sql("") is False
+
+
+def test_run_query_returns_stored_sql_in_code_block_when_user_asks():
+    """When user asks for SQL and we have stored SQL for that agent, return it in a code block without calling agent."""
+    from ttyd_slackbot.engine import runner as runner_mod
+
+    mock_agent = MagicMock()
+    stored_sql = "SELECT country, SUM(amount) FROM payments GROUP BY country"
+    runner_mod._last_sql_by_agent[id(mock_agent)] = stored_sql
+
+    result = run_query(mock_agent, "what SQL query generated that csv?", is_follow_up=True)
+
+    assert result.response_type == "text"
+    assert "```sql" in result.value
+    assert stored_sql in result.value
+    assert "Here is the SQL that was run" in result.value
+    mock_agent.chat.assert_not_called()
+    mock_agent.follow_up.assert_not_called()
+
+    # Clean up so other tests are not affected
+    runner_mod._last_sql_by_agent.pop(id(mock_agent), None)
+
+
+def test_run_query_returns_no_previous_query_when_user_asks_sql_but_none_stored():
+    """When user asks for SQL but no SQL has been stored yet, return a helpful message."""
+    mock_agent = MagicMock()
+    result = run_query(mock_agent, "show me the SQL that generated that", is_follow_up=True)
+    assert result.response_type == "text"
+    assert "No previous query" in result.value
+    assert "Ask a data question first" in result.value
+    mock_agent.chat.assert_not_called()
+    mock_agent.follow_up.assert_not_called()
+
+
+def test_run_query_stores_sql_after_successful_run():
+    """After a successful query, stored SQL is updated; asking for SQL then returns it."""
+    from ttyd_slackbot.engine import runner as runner_mod
+
+    class NumberResponse:
+        __name__ = "NumberResponse"
+        value = "42"
+
+    mock_agent = MagicMock()
+    mock_agent.chat.return_value = NumberResponse()
+    # Simulate agent having generated code with SQL (pandasai may set last_code_generated)
+    mock_agent.last_code_generated = 'execute_query("""SELECT COUNT(*) FROM users""")\nresult = ...'
+
+    result1 = run_query(mock_agent, "How many users?", is_follow_up=False)
+    assert result1.response_type == "number"
+    assert result1.value == "42"
+
+    # Stored SQL should now be available; ask for it (without calling agent again).
+    result2 = run_query(mock_agent, "what SQL generated that?", is_follow_up=True)
+    assert result2.response_type == "text"
+    assert "```sql" in result2.value
+    assert "SELECT COUNT(*) FROM users" in result2.value
+    # chat was only called once (for the first query)
+    assert mock_agent.chat.call_count == 1
+    mock_agent.follow_up.assert_not_called()
+
+    runner_mod._last_sql_by_agent.pop(id(mock_agent), None)
+
+
+def test_run_query_stores_sql_from_pandasai_v3_agent():
+    """PandasAI v3 uses last_generated_code and execute_sql_query in generated code."""
+    from ttyd_slackbot.engine import runner as runner_mod
+
+    class DataFrameResponse:
+        """Type name must contain 'DataFrame' for _normalize_response to return table."""
+        __name__ = "DataFrameResponse"
+        value = None
+
+    mock_agent = MagicMock()
+    mock_agent.chat.return_value = DataFrameResponse()
+    # PandasAI v3: code on last_generated_code (or _state.last_code_generated), uses execute_sql_query
+    mock_agent.last_generated_code = (
+        'result = execute_sql_query("""SELECT device_type, SUM(revenue) AS total_revenue_usd '
+        'FROM payments GROUP BY device_type""")\nresult = {"type": "dataframe", "value": result}'
+    )
+
+    result1 = run_query(mock_agent, "What is the total revenue by device type?", is_follow_up=False)
+    assert result1.response_type in ("table", "text")  # normalized from DataFrameResponse
+
+    result2 = run_query(mock_agent, "can I get the SQL for that?", is_follow_up=True)
+    assert result2.response_type == "text"
+    assert "```sql" in result2.value
+    assert "SELECT device_type" in result2.value
+    assert "GROUP BY device_type" in result2.value
+    mock_agent.chat.assert_called_once()
+    mock_agent.follow_up.assert_not_called()
+
+    runner_mod._last_sql_by_agent.pop(id(mock_agent), None)
