@@ -8,7 +8,11 @@ import pytest
 from ttyd_slackbot.engine import EngineResult
 from ttyd_slackbot.output.format_table import format_table_for_slack
 from ttyd_slackbot.output.pii_check import PII_BLOCK_MESSAGE, check_pii
-from ttyd_slackbot.output.prepare import prepare_for_slack
+from ttyd_slackbot.output.prepare import (
+    CSV_TRUNCATION_MESSAGE,
+    SLACK_CSV_FILE_SIZE_LIMIT_BYTES,
+    prepare_for_slack,
+)
 
 
 def test_pii_check_blocks_email():
@@ -196,3 +200,52 @@ def test_prepare_for_slack_chart_fallback_when_no_save():
     assert text == "chart repr"
     assert file_bytes is None
     assert file_name is None
+
+
+def test_prepare_for_slack_csv_file_returns_message_and_bytes():
+    """prepare_for_slack returns (message, csv_bytes, filename) for csv_file when PII check passes."""
+    engine_result = EngineResult(
+        response_type="csv_file",
+        value=(b"a,b\n1,2\n", "data.csv"),
+    )
+    with patch("ttyd_slackbot.output.prepare.check_pii") as mock_check:
+        mock_check.return_value = {"safe": True, "output": "a,b\n1,2\n"}
+        text, file_bytes, file_name = prepare_for_slack(engine_result, messages=[], interpreted_query=None)
+    assert text == "Here's your CSV."
+    assert file_bytes == b"a,b\n1,2\n"
+    assert file_name == "data.csv"
+    mock_check.assert_called_once()
+
+
+def test_prepare_for_slack_csv_file_blocks_when_pii():
+    """prepare_for_slack returns PII block message and no file when CSV content fails PII check."""
+    engine_result = EngineResult(
+        response_type="csv_file",
+        value=(b"email\nuser@evil.com\n", "export.csv"),
+    )
+    with patch("ttyd_slackbot.output.prepare.check_pii") as mock_check:
+        mock_check.return_value = {"safe": False, "output": PII_BLOCK_MESSAGE}
+        text, file_bytes, file_name = prepare_for_slack(engine_result, messages=[], interpreted_query=None)
+    assert text == PII_BLOCK_MESSAGE
+    assert file_bytes is None
+    assert file_name is None
+
+
+def test_prepare_for_slack_csv_file_truncates_when_over_limit():
+    """When CSV bytes exceed size limit, prepare returns truncated bytes and message includes truncation notice."""
+    limit = 10
+    csv_content = b"a,b,c\n1,2,3\n4,5,6\n"
+    engine_result = EngineResult(
+        response_type="csv_file",
+        value=(csv_content, "big.csv"),
+    )
+    with patch("ttyd_slackbot.output.prepare.SLACK_CSV_FILE_SIZE_LIMIT_BYTES", limit), patch(
+        "ttyd_slackbot.output.prepare.check_pii"
+    ) as mock_check:
+        mock_check.return_value = {"safe": True, "output": "a,b,c\n1,2,3\n"}
+        text, file_bytes, file_name = prepare_for_slack(engine_result, messages=[], interpreted_query=None)
+    assert CSV_TRUNCATION_MESSAGE in text
+    assert "Here's your CSV." in text
+    assert len(file_bytes) <= limit + 1
+    assert file_bytes == b"a,b,c\n"
+    assert file_name == "big.csv"

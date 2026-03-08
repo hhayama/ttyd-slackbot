@@ -4,7 +4,7 @@ PII detection for output layer.
 Blocks only direct contact-style PII and bulk export of identifiers; aggregate
 metrics and limited analytical use of identifiers (e.g. user_id) are allowed,
 consistent with intake guardrails. Uses regex for phone, email, SSN, driver's
-license, and optional LLM with conversation context for context-aware checks.
+license. LLM check is currently commented out; only regex-based checks are active.
 """
 
 import logging
@@ -112,16 +112,16 @@ def check_pii(
         logger.info("Output PII check failed: regex detected PII")
         return {"safe": False, "output": PII_BLOCK_MESSAGE}
 
-    # 2. Optional LLM check with intake context
-    if use_llm:
-        import os
-
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if api_key and messages is not None:
-            llm_safe = _llm_pii_check(text, messages, interpreted_query, api_key, model)
-            if not llm_safe:
-                logger.info("Output PII check failed: LLM detected PII")
-                return {"safe": False, "output": PII_BLOCK_MESSAGE}
+    # 2. Optional LLM check with intake context (LLM PII check disabled; regex-only.)
+    # if use_llm:
+    #     import os
+    #
+    #     api_key = os.environ.get("OPENAI_API_KEY")
+    #     if api_key and messages is not None:
+    #         llm_safe = _llm_pii_check(text, messages, interpreted_query, api_key, model)
+    #         if not llm_safe:
+    #             logger.info("Output PII check failed: LLM detected PII")
+    #             return {"safe": False, "output": PII_BLOCK_MESSAGE}
 
     return {"safe": True, "output": text}
 

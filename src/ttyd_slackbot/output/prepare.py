@@ -18,6 +18,13 @@ logger = logging.getLogger(__name__)
 # Type alias for prepare result: (message text, optional file bytes, optional filename)
 PrepareResult = tuple[str, bytes | None, str | None]
 
+# Slack allows up to 1 GB per file; we cap at 20 MB for faster uploads and smaller payloads.
+SLACK_CSV_FILE_SIZE_LIMIT_BYTES = min(1024**3, 20 * 1024 * 1024)
+
+CSV_TRUNCATION_MESSAGE = (
+    " The data has been truncated because it reached the upload size limit (20 MB)."
+)
+
 
 def prepare_for_slack(
     engine_result: EngineResult,
@@ -32,6 +39,7 @@ def prepare_for_slack(
     - Table: format as ASCII box-drawn table, then PII check on formatted string.
     - Number / error: convert to string, then PII check.
     - Chart: save chart to image bytes, PII check caption; return (caption, bytes, filename).
+    - CSV file: PII check content, optionally truncate to size limit; return (message, bytes, filename).
 
     Parameters
     ----------
@@ -57,6 +65,30 @@ def prepare_for_slack(
 
     if engine_result.response_type == "table":
         text_to_check = format_table_for_slack(engine_result.value)
+    elif engine_result.response_type == "csv_file":
+        file_bytes, file_name = engine_result.value
+        limit = SLACK_CSV_FILE_SIZE_LIMIT_BYTES
+        truncated = False
+        if len(file_bytes) > limit:
+            truncated = True
+            last_newline = file_bytes.rfind(b"\n", 0, limit + 1)
+            if last_newline != -1:
+                file_bytes = file_bytes[: last_newline + 1]
+            else:
+                file_bytes = file_bytes[:limit]
+        csv_text = file_bytes.decode("utf-8", errors="replace")
+        pii_result = check_pii(
+            csv_text,
+            messages=msg,
+            interpreted_query=interpreted_query,
+            use_llm=use_llm_pii,
+        )
+        if not pii_result["safe"]:
+            return (PII_BLOCK_MESSAGE, None, None)
+        message = "Here's your CSV."
+        if truncated:
+            message += CSV_TRUNCATION_MESSAGE
+        return (message, file_bytes, file_name)
     elif engine_result.response_type == "chart":
         caption = "Here's your chart."
         # Caption is fixed and cannot contain PII; skip LLM to avoid any context-driven false positive.

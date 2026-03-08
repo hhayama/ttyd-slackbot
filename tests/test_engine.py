@@ -6,7 +6,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ttyd_slackbot.engine.runner import (
+    EngineResult,
     _list_dataset_names,
+    _try_consume_agent_csv_file,
     create_agent,
     get_or_create_agent_for_thread,
     run_query,
@@ -88,3 +90,73 @@ def test_run_query_discovers_datasets_dir_from_env(monkeypatch, tmp_path):
     # run_query with this dir would try pai.load("myorg/foo") and need real DB - skip here
     monkeypatch.delenv("DATASETS_DIR", raising=False)
     monkeypatch.delenv("SEMANTIC_LAYER_ORG", raising=False)
+
+
+def test_try_consume_agent_csv_file_returns_unchanged_when_not_text():
+    """_try_consume_agent_csv_file returns result unchanged when response_type is not text."""
+    result = EngineResult(response_type="table", value=None)
+    assert _try_consume_agent_csv_file(result) is result
+
+
+def test_try_consume_agent_csv_file_returns_unchanged_when_no_match():
+    """_try_consume_agent_csv_file returns result unchanged when text does not match pattern."""
+    result = EngineResult(response_type="text", value="Some other message.")
+    assert _try_consume_agent_csv_file(result).response_type == "text"
+    assert _try_consume_agent_csv_file(result).value == "Some other message."
+
+
+def test_try_consume_agent_csv_file_reads_and_deletes_file(tmp_path):
+    """When text matches 'CSV file saved as X.csv' and file exists in cwd, returns csv_file and deletes file."""
+    csv_path = tmp_path / "exported_data.csv"
+    csv_content = b"a,b\n1,2\n"
+    csv_path.write_bytes(csv_content)
+    result = EngineResult(
+        response_type="text",
+        value="CSV file saved as exported_data.csv",
+    )
+    with patch.object(Path, "cwd", return_value=tmp_path):
+        out = _try_consume_agent_csv_file(result)
+    assert out.response_type == "csv_file"
+    content, filename = out.value
+    assert content == csv_content
+    assert filename == "exported_data.csv"
+    assert not csv_path.exists()
+
+
+def test_try_consume_agent_csv_file_unchanged_when_file_missing(tmp_path):
+    """When text matches but file does not exist, return result unchanged."""
+    result = EngineResult(
+        response_type="text",
+        value="CSV file saved as missing.csv",
+    )
+    with patch.object(Path, "cwd", return_value=tmp_path):
+        out = _try_consume_agent_csv_file(result)
+    assert out.response_type == "text"
+    assert "missing.csv" in out.value
+
+
+def test_try_consume_agent_csv_file_rejects_path_traversal():
+    """Filename with '..' or path sep is not consumed."""
+    result = EngineResult(
+        response_type="text",
+        value="CSV file saved as ../../../etc/passwd.csv",
+    )
+    out = _try_consume_agent_csv_file(result)
+    assert out.response_type == "text"
+
+
+def test_run_query_consumes_csv_file_when_agent_returns_saved_message(tmp_path):
+    """When agent returns 'CSV file saved as X.csv' and file exists, run_query returns csv_file result."""
+    csv_path = tmp_path / "report.csv"
+    csv_path.write_bytes(b"col1,col2\n1,2\n")
+    mock_agent = MagicMock()
+    mock_agent.chat.return_value = MagicMock()
+    mock_agent.chat.return_value.value = "CSV file saved as report.csv"
+    mock_agent.follow_up.return_value = MagicMock()
+    with patch.object(Path, "cwd", return_value=tmp_path):
+        result = run_query(mock_agent, "export as csv", is_follow_up=False)
+    assert result.response_type == "csv_file"
+    content, filename = result.value
+    assert content == b"col1,col2\n1,2\n"
+    assert filename == "report.csv"
+    assert not csv_path.exists()

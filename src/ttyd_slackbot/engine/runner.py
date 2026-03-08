@@ -41,6 +41,10 @@ refer to the SQL Styling Guidelines below.
 """
 
 
+# Regex for agent "CSV file saved as <filename>.csv" message.
+_CSV_SAVED_PATTERN = re.compile(r"(?i)CSV file saved as\s+(.+\.csv)")
+
+
 @dataclass
 class EngineResult:
     """Structured result from the engine for the output layer.
@@ -48,9 +52,10 @@ class EngineResult:
     Attributes
     ----------
     response_type : str
-        One of "text", "table", "number", "chart", "error".
+        One of "text", "table", "number", "chart", "error", "csv_file".
     value : str | Any
         Raw value: str for text/error, DataFrame for table, number, or chart object.
+        For csv_file: tuple of (bytes, filename).
     """
 
     response_type: str
@@ -263,6 +268,37 @@ def _normalize_response(response: Any) -> EngineResult:
     return EngineResult(response_type="text", value=str(value))
 
 
+def _try_consume_agent_csv_file(engine_result: EngineResult) -> EngineResult:
+    """
+    If the result is text matching "CSV file saved as X.csv", read that file from cwd,
+    delete it, and return a csv_file result. Otherwise return the result unchanged.
+    """
+    if engine_result.response_type != "text":
+        return engine_result
+    text = engine_result.value
+    if not text or not isinstance(text, str):
+        return engine_result
+    match = _CSV_SAVED_PATTERN.search(text.strip())
+    if not match:
+        return engine_result
+    filename = match.group(1).strip()
+    if not filename or ".." in filename or os.path.sep in filename:
+        return engine_result
+    cwd = Path.cwd().resolve()
+    path = (cwd / filename).resolve()
+    if not path.is_file() or not path.is_relative_to(cwd):
+        return engine_result
+    try:
+        content = path.read_bytes()
+    except OSError:
+        return engine_result
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return EngineResult(response_type="csv_file", value=(content, filename))
+
+
 def run_query(
     agent: Any,
     query: str,
@@ -293,4 +329,6 @@ def run_query(
         response = agent.follow_up(query)
     else:
         response = agent.chat(query)
-    return _normalize_response(response)
+    result = _normalize_response(response)
+    result = _try_consume_agent_csv_file(result)
+    return result
