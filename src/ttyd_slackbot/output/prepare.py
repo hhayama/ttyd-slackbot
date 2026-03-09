@@ -84,7 +84,7 @@ def prepare_for_slack(
             use_llm=use_llm_pii,
         )
         if not pii_result["safe"]:
-            return (PII_BLOCK_MESSAGE, None, None)
+            return (pii_result["output"], None, None)
         message = "Here's your CSV."
         if truncated:
             message += CSV_TRUNCATION_MESSAGE
