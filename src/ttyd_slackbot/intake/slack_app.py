@@ -44,13 +44,19 @@ def _get_sender_display_name(event: dict, context) -> str:
         return "there"
     try:
         response = context.client.users_info(user=user_id)
-        user = response.get("user") if isinstance(response, dict) else None
+        # SlackResponse is dict-like but not isinstance(response, dict); use .get() when available
+        getter = getattr(response, "get", None) if response is not None else None
+        user = response.get("user") if getter else (response.get("user") if isinstance(response, dict) else None)
         if not user:
             return "there"
         profile = user.get("profile") or {}
         name = profile.get("display_name") or user.get("real_name")
         return (name or "").strip() or "there"
-    except Exception:
+    except Exception as e:
+        if "missing_scope" in str(e) and "users:read" in str(e):
+            logger.info(
+                "users_info failed due to missing_scope: add 'users:read' under Bot Token Scopes at api.slack.com/apps → your app → OAuth & Permissions, then reinstall the app."
+            )
         return "there"
 
 
@@ -91,11 +97,14 @@ def _handle_message(event: dict, say, context) -> None:
     is_follow_up = any(m.get("role") == "assistant" for m in messages)
     if not is_follow_up:
         name = _get_sender_display_name(event, context)
-        initial_message = (
+        placeholder = (
             f"Hi! Thanks for your message {name}. I'm loading the data and am looking into it."
         )
-        say(initial_message, thread_ts=thread_ts)
-        append_message(channel_id, thread_ts, "assistant", initial_message)
+    else:
+        placeholder = "Thinking..."
+    post_response = say(placeholder, thread_ts=thread_ts)
+    message_ts = post_response.get("ts") if post_response else None
+
     try:
         agent = get_or_create_agent_for_thread(channel_id, thread_ts)
         engine_result = run_query(agent, raw_query, is_follow_up=is_follow_up)
@@ -104,6 +113,14 @@ def _handle_message(event: dict, say, context) -> None:
             messages=messages,
             interpreted_query=interpreted,
         )
+        if message_ts and getattr(context, "client", None):
+            try:
+                context.client.chat_update(channel=channel_id, ts=message_ts, text=text)
+            except Exception as update_err:
+                logger.warning("chat_update failed, posting new message: %s", update_err)
+                say(text, thread_ts=thread_ts)
+        else:
+            say(text, thread_ts=thread_ts)
         if file_bytes is not None and file_name is not None:
             context.client.files_upload_v2(
                 channel=channel_id,
@@ -111,12 +128,20 @@ def _handle_message(event: dict, say, context) -> None:
                 filename=file_name,
                 thread_ts=thread_ts,
             )
-        say(text, thread_ts=thread_ts)
         append_message(channel_id, thread_ts, "assistant", text)
     except Exception as e:
         logger.exception("Engine failed for query %s: %s", raw_query[:100], e)
         fallback = "I couldn't run the query right now. Please try again later."
-        say(fallback, thread_ts=thread_ts)
+        if message_ts and getattr(context, "client", None):
+            try:
+                context.client.chat_update(
+                    channel=channel_id, ts=message_ts, text=fallback
+                )
+            except Exception as update_err:
+                logger.warning("chat_update failed on error path: %s", update_err)
+                say(fallback, thread_ts=thread_ts)
+        else:
+            say(fallback, thread_ts=thread_ts)
         append_message(channel_id, thread_ts, "assistant", fallback)
 
 
