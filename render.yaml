@@ -1,0 +1,17 @@
+# Render Blueprint: deploy ttyd-slackbot as a Background Worker from GitHub.
+# Set secret values in the Render Dashboard (Environment tab); sync: false prompts for values.
+services:
+  - type: worker
+    name: ttyd-slackbot
+    runtime: docker
+    envVars:
+      - key: SLACK_BOT_TOKEN
+        sync: false
+      - key: SLACK_APP_TOKEN
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: SEMANTIC_LAYER_ORG
+        sync: false

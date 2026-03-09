@@ -1,0 +1,32 @@
+# Never bake secrets into the image.
+.env
+.env.*
+!.env.example
+
+# Python and tooling caches.
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+
+# Git and editor metadata.
+.git/
+.gitignore
+.cursor/
+
+# Optional: keep README if you want it in the image.
+# *.md
+
+# Avoid sending large or temporary data.
+*.csv
+*.parquet
+*.db
+*.sqlite

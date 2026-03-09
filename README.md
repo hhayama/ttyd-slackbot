@@ -39,6 +39,19 @@ poetry run ttyd-semantic-refresh
 
 Options: `--org` (default: `SEMANTIC_LAYER_ORG` or `ttyd`), `--schema` (Postgres schema, default `public`), `--dry-run` (list tables only, no `pai.create()`), `--datasets-dir` (override output directory). Example: `poetry run ttyd-semantic-refresh --dry-run`
 
+## Deploying on Render
+
+You can run the bot as a **Background Worker** on [Render](https://render.com/) using the repo’s Docker setup.
+
+1. **Connect the repo:** In the Render Dashboard, create a new **Background Worker**. Connect your GitHub repo (or use **Blueprint** and apply [render.yaml](render.yaml)).
+2. **Use Docker:** Set the runtime to **Docker**. Render will build from the repo’s [Dockerfile](Dockerfile) (no extra build command).
+3. **Set environment variables:** In the service’s **Environment** tab, add the following. Mark secret values as **Secret** so they are encrypted and hidden in the UI.
+   - **Required:** `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `OPENAI_API_KEY`
+   - **For data queries:** `DATABASE_URL` (or `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`)
+   - **Optional:** `SEMANTIC_LAYER_ORG` (default: `ttyd`), `DATASETS_DIR` (default: `./datasets` in the container)
+
+Variable names and descriptions match [.env.example](.env.example). After saving, deploy; the worker runs `ttyd-slackbot` and stays up (Slack Socket Mode).
+
 ## Development
 
 - **Tests:** From the repo root, run `pytest -q`. [pyproject.toml](pyproject.toml) sets `pythonpath = ["src"]` so tests discover the package.
