@@ -20,7 +20,7 @@ PII_BLOCK_MESSAGE = (
 
 # User-friendly labels for each regex pattern (for the message when a pattern triggers).
 _PII_PATTERN_LABELS: dict[str, str] = {
-    "phone": "phone number",
+    "phone": "US phone number",
     "email": "email address",
 }
 
@@ -32,10 +32,10 @@ def format_pii_block_message(pattern: str | None = None) -> str:
         return f"{base} (detected: {_PII_PATTERN_LABELS[pattern]})."
     return base
 
-# Regex patterns for common PII (US-centric but catches many international formats).
-# Require at least one separator so plain digit strings (revenue, counts, IDs) are not false positives.
+# US phone formats only: 123-456-7890 or (123)-456-7890 / (123) 456-7890.
+# Plain digit strings (revenue, counts, IDs) are not matched.
 _PHONE = re.compile(
-    r"\+?\d{1,3}[-.\s]\(?\d{2,4}\)?[-.\s]?\d{2,4}[-.\s]?\d{2,4}\d*|\d{3}[-.\s]\d{3}[-.\s]\d{4}"
+    r"\d{3}-\d{3}-\d{4}|\(\d{3}\)\s*-?\s*\d{3}-\d{4}"
 )
 _EMAIL = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 
