@@ -1,10 +1,10 @@
 """
 PII detection for output layer.
 
-Blocks only direct contact-style PII and bulk export of identifiers; aggregate
-metrics and limited analytical use of identifiers (e.g. user_id) are allowed,
-consistent with intake guardrails. Uses regex for phone, email, SSN, driver's
-license. LLM check is currently commented out; only regex-based checks are active.
+Blocks only direct contact-style PII: phone numbers and email addresses.
+Uses regex only (no LLM); output is never sent for external PII checking.
+Aggregate metrics and limited analytical use of identifiers (e.g. user_id)
+are allowed, consistent with intake guardrails.
 """
 
 import logging
@@ -18,45 +18,43 @@ PII_BLOCK_MESSAGE = (
     "This response was withheld because it may contain personal information."
 )
 
+# User-friendly labels for each regex pattern (for the message when a pattern triggers).
+_PII_PATTERN_LABELS: dict[str, str] = {
+    "phone": "phone number",
+    "email": "email address",
+}
+
+
+def format_pii_block_message(pattern: str | None = None) -> str:
+    """Return the message to show when PII is detected; include which filter triggered if known."""
+    base = "This response was withheld because it may contain personal information."
+    if pattern and pattern in _PII_PATTERN_LABELS:
+        return f"{base} (detected: {_PII_PATTERN_LABELS[pattern]})."
+    return base
+
 # Regex patterns for common PII (US-centric but catches many international formats).
 # Require at least one separator so plain digit strings (revenue, counts, IDs) are not false positives.
 _PHONE = re.compile(
     r"\+?\d{1,3}[-.\s]\(?\d{2,4}\)?[-.\s]?\d{2,4}[-.\s]?\d{2,4}\d*|\d{3}[-.\s]\d{3}[-.\s]\d{4}"
 )
 _EMAIL = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
-# Require dash or space so plain 9-digit numbers (revenue, counts, IDs) are not false positives.
-_SSN = re.compile(r"\b\d{3}[-\s]\d{2}[-\s]\d{4}\b")
-# Driver's license: alphanumeric ID; must contain both a letter and a digit (avoids "123456789", "42000000").
-_DRIVERS_LICENSE = re.compile(
-    r"\b(?=[A-Z0-9]*\d)(?=[A-Z0-9]*[A-Za-z])[A-Z0-9]{4,}[\s-]?[A-Z0-9]{2,}\b",
-    re.IGNORECASE,
-)
 
 
 def _regex_contains_pii(text: str) -> bool:
-    """Return True if text matches any PII pattern (phone, email, SSN, DL)."""
+    """Return True if text matches any PII pattern (phone or email)."""
     if not text or not isinstance(text, str):
         return False
-    return bool(
-        _PHONE.search(text)
-        or _EMAIL.search(text)
-        or _SSN.search(text)
-        or _DRIVERS_LICENSE.search(text)
-    )
+    return bool(_PHONE.search(text) or _EMAIL.search(text))
 
 
 def _which_regex_matched(text: str) -> str | None:
-    """Return which PII pattern matched: 'phone', 'email', 'ssn', 'drivers_license', or None."""
+    """Return which PII pattern matched: 'phone', 'email', or None."""
     if not text or not isinstance(text, str):
         return None
     if _PHONE.search(text):
         return "phone"
     if _EMAIL.search(text):
         return "email"
-    if _SSN.search(text):
-        return "ssn"
-    if _DRIVERS_LICENSE.search(text):
-        return "drivers_license"
     return None
 
 
@@ -68,38 +66,34 @@ def check_pii(
     model: str = "gpt-4.1-mini",
 ) -> dict[str, Any]:
     """
-    Check if text contains PII; optionally use LLM with conversation context.
+    Check if text contains PII using regex only (phone number and email).
 
-    Aggregate metrics (counts, sums, revenue by country, etc.) and limited
-    analytical use of identifiers (e.g. returning one user_id for "longest
-    subscriber") are considered safe. Only direct contact-style PII (names,
-    emails, phones, addresses, SSN, etc.) and bulk export of identifiers
-    are blocked.
+    No output is sent to any LLM. Only direct contact-style PII is blocked:
+    phone numbers and email addresses (except example.com/org/test.com).
+    Aggregate metrics and limited analytical use of identifiers are allowed.
 
     Parameters
     ----------
     text : str
         Engine output to check (or formatted table string).
     messages : list of dict, optional
-        Thread conversation history [{"role": "user"|"assistant", "content": str}].
+        Unused (kept for API compatibility). No LLM is called.
     interpreted_query : str, optional
-        Intake-interpreted query for context.
+        Unused (kept for API compatibility).
     use_llm : bool, optional
-        If True and OPENAI_API_KEY set, run LLM-based PII check with context.
-        Default True.
+        Unused (kept for API compatibility). Output is never sent for LLM check.
     model : str, optional
-        OpenAI model for LLM check. Default gpt-4.1-mini.
+        Unused (kept for API compatibility).
 
     Returns
     -------
     dict
-        {"safe": bool, "output": str}. If safe is False, output is PII_BLOCK_MESSAGE.
-        If safe is True, output is the original text (or redacted version in future).
+        {"safe": bool, "output": str}. If safe is False, output is block message.
+        If safe is True, output is the original text.
     """
     if not text or not isinstance(text, str):
         return {"safe": True, "output": text or ""}
 
-    # 1. Regex check first
     _regex_hit = _regex_contains_pii(text)
     _which = _which_regex_matched(text) if _regex_hit else None
     # Don't block on placeholder emails (e.g. schema examples: user@example.com)
@@ -111,19 +105,9 @@ def check_pii(
         ):
             _regex_hit = False
     if _regex_hit:
-        logger.info("Output PII check failed: regex detected PII")
-        return {"safe": False, "output": PII_BLOCK_MESSAGE}
-
-    # 2. Optional LLM check with intake context (LLM PII check disabled; regex-only.)
-    # if use_llm:
-    #     import os
-    #
-    #     api_key = os.environ.get("OPENAI_API_KEY")
-    #     if api_key and messages is not None:
-    #         llm_safe = _llm_pii_check(text, messages, interpreted_query, api_key, model)
-    #         if not llm_safe:
-    #             logger.info("Output PII check failed: LLM detected PII")
-    #             return {"safe": False, "output": PII_BLOCK_MESSAGE}
+        block_message = format_pii_block_message(_which)
+        logger.info("Output PII check failed: regex detected PII (pattern=%s)", _which)
+        return {"safe": False, "output": block_message}
 
     return {"safe": True, "output": text}
 

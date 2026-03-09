@@ -7,7 +7,7 @@ import pytest
 
 from ttyd_slackbot.engine import EngineResult
 from ttyd_slackbot.output.format_table import format_table_for_slack
-from ttyd_slackbot.output.pii_check import PII_BLOCK_MESSAGE, check_pii
+from ttyd_slackbot.output.pii_check import PII_BLOCK_MESSAGE, check_pii, format_pii_block_message
 from ttyd_slackbot.output.prepare import (
     CSV_TRUNCATION_MESSAGE,
     SLACK_CSV_FILE_SIZE_LIMIT_BYTES,
@@ -16,19 +16,19 @@ from ttyd_slackbot.output.prepare import (
 
 
 def test_pii_check_blocks_email():
-    """check_pii returns safe=False and block message when email is present."""
+    """check_pii returns safe=False and block message with pattern when email is present."""
     with patch("ttyd_slackbot.output.pii_check._llm_pii_check", return_value=True):
         result = check_pii("Contact us at support@example.com for help.", use_llm=False)
     assert result["safe"] is False
-    assert result["output"] == PII_BLOCK_MESSAGE
+    assert result["output"] == format_pii_block_message("email")
 
 
 def test_pii_check_blocks_phone():
-    """check_pii returns safe=False when phone number is present."""
+    """check_pii returns safe=False and block message with pattern when phone number is present."""
     with patch("ttyd_slackbot.output.pii_check._llm_pii_check", return_value=True):
         result = check_pii("Call 555-123-4567 for details.", use_llm=False)
     assert result["safe"] is False
-    assert result["output"] == PII_BLOCK_MESSAGE
+    assert result["output"] == format_pii_block_message("phone")
 
 
 def test_pii_check_allows_safe_text():
@@ -38,14 +38,6 @@ def test_pii_check_allows_safe_text():
         result = check_pii(text, use_llm=False)
     assert result["safe"] is True
     assert result["output"] == text
-
-
-def test_pii_check_blocks_ssn():
-    """check_pii returns safe=False when SSN pattern is present."""
-    with patch("ttyd_slackbot.output.pii_check._llm_pii_check", return_value=True):
-        result = check_pii("SSN: 123-45-6789", use_llm=False)
-    assert result["safe"] is False
-    assert result["output"] == PII_BLOCK_MESSAGE
 
 
 def test_pii_check_allows_aggregate_metrics_without_llm():
@@ -138,11 +130,13 @@ def test_prepare_for_slack_text_passes_through_when_safe():
 
 
 def test_prepare_for_slack_text_blocks_when_pii():
-    """prepare_for_slack returns PII block message when check fails."""
+    """prepare_for_slack returns PII block message (with pattern) when check fails."""
+    block_msg = format_pii_block_message("email")
     engine_result = EngineResult(response_type="text", value="Email: user@test.com")
-    with patch("ttyd_slackbot.output.prepare.check_pii", return_value={"safe": False, "output": PII_BLOCK_MESSAGE}):
+    with patch("ttyd_slackbot.output.prepare.check_pii", return_value={"safe": False, "output": block_msg}):
         text, file_bytes, file_name = prepare_for_slack(engine_result, messages=[], interpreted_query=None)
-    assert text == PII_BLOCK_MESSAGE
+    assert text == block_msg
+    assert "withheld" in text and "email address" in text
     assert file_bytes is None
     assert file_name is None
 
@@ -218,15 +212,17 @@ def test_prepare_for_slack_csv_file_returns_message_and_bytes():
 
 
 def test_prepare_for_slack_csv_file_blocks_when_pii():
-    """prepare_for_slack returns PII block message and no file when CSV content fails PII check."""
+    """prepare_for_slack returns PII block message (with pattern) and no file when CSV content fails PII check."""
+    block_msg = format_pii_block_message("email")
     engine_result = EngineResult(
         response_type="csv_file",
         value=(b"email\nuser@evil.com\n", "export.csv"),
     )
     with patch("ttyd_slackbot.output.prepare.check_pii") as mock_check:
-        mock_check.return_value = {"safe": False, "output": PII_BLOCK_MESSAGE}
+        mock_check.return_value = {"safe": False, "output": block_msg}
         text, file_bytes, file_name = prepare_for_slack(engine_result, messages=[], interpreted_query=None)
-    assert text == PII_BLOCK_MESSAGE
+    assert text == block_msg
+    assert "withheld" in text and "email address" in text
     assert file_bytes is None
     assert file_name is None
 
