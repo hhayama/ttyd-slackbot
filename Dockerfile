@@ -7,7 +7,7 @@ RUN pip install --no-cache-dir poetry
 WORKDIR /app
 
 # Install dependencies and the app (requires src/ for the package).
-COPY pyproject.toml poetry.lock ./
+COPY pyproject.toml poetry.lock README.md ./
 COPY src ./src
 RUN poetry config virtualenvs.create false \
     && poetry install --no-interaction --no-ansi
