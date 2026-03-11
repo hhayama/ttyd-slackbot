@@ -83,11 +83,8 @@ def _get_app() -> App:
 
 def _is_debug_query_errors() -> bool:
     """Return True if step-level error messages should be shown in Slack (for debugging)."""
-    return os.environ.get("SLACK_DEBUG_QUERY_ERRORS", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    val = os.environ.get("SLACK_DEBUG_QUERY_ERRORS", "").strip().lower()
+    return val in ("1", "true", "yes", "on", "enabled")
 
 
 def _sanitize_error_message(e: Exception) -> str:
@@ -292,6 +289,11 @@ def _handle_message(event: dict, say, context) -> None:
             append_message(channel_id, thread_ts, "assistant", text)
         except Exception as e:
             logger.exception("Engine failed for query %s: %s", raw_query[:100], e)
+            debug_val = os.environ.get("SLACK_DEBUG_QUERY_ERRORS", "")
+            logger.warning(
+                "Sending generic fallback. Set SLACK_DEBUG_QUERY_ERRORS=1 to see step and error detail in Slack. Current value: %r",
+                debug_val if debug_val else "(unset)",
+            )
             fallback = _build_error_fallback("", e)  # generic message when debug off
             _post_fallback_and_append(
                 channel_id, thread_ts, message_ts, context, say, fallback
@@ -300,6 +302,17 @@ def _handle_message(event: dict, say, context) -> None:
 
 def run() -> None:
     """Start the Intake Slack app in Socket Mode. Blocks until shutdown."""
+    debug_val = os.environ.get("SLACK_DEBUG_QUERY_ERRORS", "").strip()
+    if _is_debug_query_errors():
+        logger.info(
+            "SLACK_DEBUG_QUERY_ERRORS=%r -> step-level error messages will be shown in Slack",
+            debug_val or "(empty)",
+        )
+    else:
+        logger.info(
+            "SLACK_DEBUG_QUERY_ERRORS=%r -> generic error message only (set to 1 or true for step-level detail)",
+            debug_val if debug_val else "(unset)",
+        )
     app = _get_app()
     app.event("message")(_handle_message)
 
