@@ -87,46 +87,77 @@ def _is_debug_query_errors() -> bool:
     return val in ("1", "true", "yes", "on", "enabled")
 
 
+def _redact_message(msg: str, max_len: int = 120) -> str:
+    """Flatten, redact secrets, and truncate a single message string."""
+    s = " ".join(msg.strip().split())
+    s = re.sub(r"xox[bap]-[a-zA-Z0-9.-]+", "***", s)
+    s = re.sub(r"sk-[a-zA-Z0-9.-]+", "***", s)
+    s = re.sub(r"sk_proj-[a-zA-Z0-9.-]+", "***", s)
+    s = re.sub(r"password=[^\s&]+", "password=***", s, flags=re.IGNORECASE)
+    s = re.sub(r"api_key=[^\s&]+", "api_key=***", s, flags=re.IGNORECASE)
+    s = re.sub(r":([^:@\s]{4,})@", ":***@", s)
+    s = re.sub(
+        r"(token|key|secret|password)\s*[=:]\s*[a-zA-Z0-9_-]{20,}",
+        r"\1=***",
+        s,
+        flags=re.IGNORECASE,
+    )
+    if len(s) > max_len:
+        s = s[: max_len - 3].rstrip() + "..."
+    return s
+
+
 def _sanitize_error_message(e: Exception) -> str:
     """
     Return a safe one-line error string for Slack: exception type + redacted message.
-    Never includes keys, tokens, or passwords.
+    Includes chained cause (e.__cause__ or e.__context__) when present so the real
+    reason (e.g. authentication failed) is visible. Never includes keys, tokens, or passwords.
     """
-    msg = str(e).strip()
-    # Flatten to one line
-    msg = " ".join(msg.split())
-    # Redact Slack tokens (xoxb-, xapp-, xoxp- and following segment)
-    msg = re.sub(r"xox[bap]-[a-zA-Z0-9.-]+", "***", msg)
-    # Redact API key prefixes (OpenAI, etc.)
-    msg = re.sub(r"sk-[a-zA-Z0-9.-]+", "***", msg)
-    msg = re.sub(r"sk_proj-[a-zA-Z0-9.-]+", "***", msg)
-    # Redact password=value and api_key=value
-    msg = re.sub(r"password=[^\s&]+", "password=***", msg, flags=re.IGNORECASE)
-    msg = re.sub(r"api_key=[^\s&]+", "api_key=***", msg, flags=re.IGNORECASE)
-    # Redact :password@ or :user:password@ in URLs (keep :***@)
-    msg = re.sub(r":([^:@\s]{4,})@", ":***@", msg)
-    # Redact long token-like segments (20+ alphanumeric) after sensitive keywords
-    msg = re.sub(
-        r"(token|key|secret|password)\s*[=:]\s*[a-zA-Z0-9_-]{20,}",
-        r"\1=***",
-        msg,
-        flags=re.IGNORECASE,
-    )
-    # Truncate message part to avoid leakage at end
-    max_msg = 120
-    if len(msg) > max_msg:
-        msg = msg[: max_msg - 3].rstrip() + "..."
+    msg = _redact_message(str(e), max_len=120)
     name = type(e).__name__
-    if msg:
-        return f"{name}: {msg}"
-    return name
+    line = f"{name}: {msg}" if msg else name
+    cause = getattr(e, "__cause__", None) or getattr(e, "__context__", None)
+    if cause is not None and cause is not e:
+        cause_msg = _redact_message(str(cause), max_len=100)
+        cause_name = type(cause).__name__
+        line += f" Caused by: {cause_name}: {cause_msg}" if cause_msg else f" Caused by: {cause_name}"
+    return line
+
+
+def _hint_for_exception(e: Exception, max_depth: int = 5) -> str:
+    """If the exception chain suggests credentials/connectivity, return a short hint."""
+    keywords = (
+        "authentication failed",
+        "password authentication",
+        "connection refused",
+        "could not connect",
+        "unable to connect",
+        "connect refused",
+        "no pg_hba.conf entry",
+        "timeout",
+        "connection timed out",
+    )
+    seen = set()
+    current = e
+    depth = 0
+    while current is not None and id(current) not in seen and depth < max_depth:
+        seen.add(id(current))
+        depth += 1
+        text = str(current).lower()
+        if any(kw in text for kw in keywords):
+            return " Likely cause: database credentials or connectivity (check DATABASE_URL or DB_* and that the DB is reachable)."
+        current = getattr(current, "__cause__", None) or getattr(
+            current, "__context__", None
+        )
+    return ""
 
 
 def _build_error_fallback(step_label: str, e: Exception) -> str:
-    """Build fallback message for Slack; when debug on include sanitized reason."""
+    """Build fallback message for Slack; when debug on include sanitized reason and optional hint."""
     if _is_debug_query_errors():
         reason = _sanitize_error_message(e)
-        return f"Query failed while {step_label}. {reason}"
+        hint = _hint_for_exception(e)
+        return f"Query failed while {step_label}. {reason}{hint}"
     return "I couldn't run the query right now. Please try again later."
 
 
