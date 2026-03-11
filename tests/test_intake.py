@@ -42,14 +42,14 @@ def test_handle_message_replies_with_output_layer_only_when_guardrails_pass():
     mock_logger.info.assert_called_once()
     call_args = mock_logger.info.call_args[0]
     assert "What is total revenue?" in call_args[1]
-    assert mock_say.call_count == 2
+    assert mock_say.call_count == 1
     first_say_args, first_say_kw = mock_say.call_args_list[0]
     assert "Hi!" in first_say_args[0] and "Jane" in first_say_args[0]
-    assert "loading the data" in first_say_args[0] and "look into it shortly" in first_say_args[0]
+    assert "loading the data" in first_say_args[0] and "looking into it" in first_say_args[0]
     assert first_say_kw.get("thread_ts") == "1234567890.123456"
-    second_say_args, second_say_kw = mock_say.call_args_list[1]
-    assert "42,000" in second_say_args[0]
-    assert second_say_kw.get("thread_ts") == "1234567890.123456"
+    mock_context.client.chat_update.assert_called_once()
+    update_kw = mock_context.client.chat_update.call_args[1]
+    assert "42,000" in update_kw["text"]
     mock_run_query.assert_called_once_with(
         mock_agent, "What is total revenue?", is_follow_up=False
     )
@@ -72,6 +72,29 @@ def test_handle_message_when_guardrails_block_says_reason():
         "We cannot answer questions about PII such as emails.",
         thread_ts="1234567890.123456",
     )
+
+
+def test_handle_message_help_intent_returns_saved_response_without_guardrails_or_engine():
+    """When user asks for help (what can I ask), reply with help content and skip guardrails/engine."""
+    event = {
+        "text": "what can I ask?",
+        "channel": "C123",
+        "ts": "1234567890.123456",
+    }
+    mock_say = MagicMock()
+    help_content = "Here's what you can ask about. I have access to: *users* ..."
+    with patch("ttyd_slackbot.intake.slack_app.is_help_intent", return_value=True), patch(
+        "ttyd_slackbot.intake.slack_app._get_help_response", return_value=help_content
+    ), patch("ttyd_slackbot.intake.slack_app.check_guardrails") as mock_guard, patch(
+        "ttyd_slackbot.intake.slack_app.get_or_create_agent_for_thread"
+    ) as mock_agent, patch(
+        "ttyd_slackbot.intake.slack_app.run_query"
+    ) as mock_run:
+        _handle_message(event, mock_say, None)
+    mock_say.assert_called_once_with(help_content, thread_ts="1234567890.123456")
+    mock_guard.assert_not_called()
+    mock_agent.assert_not_called()
+    mock_run.assert_not_called()
 
 
 def test_handle_message_ignores_bot_messages():
@@ -131,10 +154,11 @@ def test_handle_message_uploads_chart_via_files_upload_v2():
         filename="chart.png",
         thread_ts="111.222",
     )
-    assert mock_say.call_count == 2
+    assert mock_say.call_count == 1
     say_calls = [c[0][0] for c in mock_say.call_args_list]
     assert "Hi!" in say_calls[0] and "Alex" in say_calls[0]
-    assert caption in say_calls
+    mock_context.client.chat_update.assert_called_once()
+    assert caption in mock_context.client.chat_update.call_args[1]["text"]
 
 
 def test_handle_message_follow_up_no_initial_message():
@@ -173,8 +197,8 @@ def test_handle_message_follow_up_no_initial_message():
         return_value=engine_result,
     ), patch("ttyd_slackbot.intake.slack_app.append_message"):
         _handle_message(event, mock_say, None)
-    assert mock_say.call_count == 1
-    say_args = mock_say.call_args[0][0]
+    assert mock_say.call_count == 2
+    say_args = mock_say.call_args_list[1][0][0]
     assert "38,000" in say_args
 
 

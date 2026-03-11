@@ -15,6 +15,8 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 from ttyd_slackbot.engine import get_or_create_agent_for_thread, run_query
 from ttyd_slackbot.intake.guardrails import check_guardrails
+from ttyd_slackbot.intake.help_intent import is_help_intent
+from ttyd_slackbot.intake.help_response import load_help_response
 from ttyd_slackbot.intake.memory import append_message, get_messages
 from ttyd_slackbot.intake.schema_loader import get_schema_summary
 from ttyd_slackbot.output import prepare_for_slack
@@ -23,6 +25,16 @@ logger = logging.getLogger(__name__)
 
 # Schema summary loaded once at first use and reused
 _schema_summary: str | None = None
+# Help response (what can be queried) loaded once at first use
+_help_response: str | None = None
+
+
+def _get_help_response() -> str:
+    """Return help response for 'what can I ask' intent; load once and cache."""
+    global _help_response
+    if _help_response is None:
+        _help_response = load_help_response()
+    return _help_response
 
 
 def _get_schema_summary() -> str:
@@ -83,6 +95,13 @@ def _handle_message(event: dict, say, context) -> None:
     thread_ts = event.get("thread_ts") or event["ts"]
     append_message(channel_id, thread_ts, "user", text)
     messages = get_messages(channel_id, thread_ts)
+
+    if is_help_intent(text):
+        help_content = _get_help_response()
+        say(help_content, thread_ts=thread_ts)
+        append_message(channel_id, thread_ts, "assistant", help_content)
+        return
+
     schema_summary = _get_schema_summary()
     result = check_guardrails(messages, schema_summary)
 
