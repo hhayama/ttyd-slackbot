@@ -16,9 +16,8 @@ from ttyd_slackbot.output.prepare import (
 
 
 def test_pii_check_blocks_email():
-    """check_pii returns safe=False and block message with pattern when email is present."""
-    with patch("ttyd_slackbot.output.pii_check._llm_pii_check", return_value=True):
-        result = check_pii("Contact us at support@example.com for help.", use_llm=False)
+    """check_pii returns safe=False and block message with pattern when email is present (non-placeholder)."""
+    result = check_pii("Contact us at support@gmail.com for help.", use_llm=False)
     assert result["safe"] is False
     assert result["output"] == format_pii_block_message("email")
 
@@ -91,31 +90,30 @@ def test_format_table_empty_dataframe():
     assert "No rows" in out
 
 
-def test_format_table_produces_box_table():
-    """format_table_for_slack produces ASCII box-drawn table with header and rows."""
+def test_format_table_produces_code_block_with_data():
+    """format_table_for_slack returns default text in a code block with header and rows."""
     df = pd.DataFrame({"a": [1, 2], "b": ["x", "y"]})
     out = format_table_for_slack(df)
-    assert "+" in out and "-" in out and "|" in out
+    assert out.strip().startswith("```") and out.strip().endswith("```")
     assert "a" in out and "b" in out
     assert "1" in out and "2" in out
     assert "x" in out and "y" in out
 
 
 def test_format_table_truncates_rows():
-    """format_table_for_slack truncates to max_rows and adds note."""
+    """format_table_for_slack truncates to max_rows and adds note about CSV."""
     df = pd.DataFrame({"x": range(100)})
     out = format_table_for_slack(df, max_rows=5)
     assert "Showing first 5 of 100" in out
-    assert out.count("+") >= 2 and out.count("|") >= 2
+    assert "CSV" in out or "attached" in out
 
 
-def test_format_table_numeric_right_aligned():
-    """format_table_for_slack right-aligns numeric columns."""
+def test_format_table_to_string_in_code_block():
+    """format_table_for_slack wraps DataFrame to_string() in a code block."""
     df = pd.DataFrame({"n": [1, 99], "s": ["a", "bb"]})
     out = format_table_for_slack(df)
-    # Numeric column: " 1" and "99" should be right-aligned (space before 1)
-    assert " 1" in out or "1" in out
-    assert "99" in out
+    assert "```" in out
+    assert "1" in out and "99" in out
     assert "a" in out and "bb" in out
 
 
@@ -145,15 +143,36 @@ def test_prepare_for_slack_table_formats_then_checks_pii():
     """prepare_for_slack formats table then runs PII check on formatted string."""
     df = pd.DataFrame({"col": [1, 2, 3]})
     engine_result = EngineResult(response_type="table", value=df)
+    formatted = format_table_for_slack(df)
     with patch("ttyd_slackbot.output.prepare.check_pii") as mock_check:
-        mock_check.return_value = {"safe": True, "output": "+-----+\n| col |\n+-----+\n|   1 |\n|   2 |\n|   3 |\n+-----+"}
+        mock_check.return_value = {"safe": True, "output": formatted}
         text, file_bytes, file_name = prepare_for_slack(engine_result, messages=[], interpreted_query=None)
-    assert "|" in text
+    assert "col" in text and "1" in text
     assert file_bytes is None
     assert file_name is None
     mock_check.assert_called_once()
     call_arg = mock_check.call_args[0][0]
     assert "col" in call_arg and "1" in call_arg
+
+
+def test_prepare_for_slack_table_attaches_csv_when_over_20_rows():
+    """prepare_for_slack returns (message, csv_bytes, 'data.csv') when table has >20 rows and PII check passes."""
+    df = pd.DataFrame({"a": range(25), "b": [f"row{i}" for i in range(25)]})
+    engine_result = EngineResult(response_type="table", value=df)
+    formatted = format_table_for_slack(df)
+    with patch("ttyd_slackbot.output.prepare.check_pii") as mock_check:
+        mock_check.side_effect = [
+            {"safe": True, "output": formatted},
+            {"safe": True, "output": df.to_csv(index=False)},
+        ]
+        text, file_bytes, file_name = prepare_for_slack(engine_result, messages=[], interpreted_query=None)
+    assert "Showing first 20 of 25" in text
+    assert "CSV" in text or "attached" in text
+    assert file_bytes is not None
+    assert len(file_bytes) > 0
+    assert file_name == "data.csv"
+    assert b"a,b" in file_bytes
+    assert b"0,row0" in file_bytes
 
 
 def test_prepare_for_slack_number_converts_to_string():

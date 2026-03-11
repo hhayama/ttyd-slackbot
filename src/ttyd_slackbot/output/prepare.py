@@ -36,7 +36,7 @@ def prepare_for_slack(
     Run output guardrails and formatting on engine result; return payload for Slack.
 
     - Text: PII check (with conversation context). If unsafe, return block message.
-    - Table: format as ASCII box-drawn table, then PII check on formatted string.
+    - Table: format as default text in code block; if >20 rows, PII check then attach full data as CSV.
     - Number / error: convert to string, then PII check.
     - Chart: save chart to image bytes, PII check caption; return (caption, bytes, filename).
     - CSV file: PII check content, optionally truncate to size limit; return (message, bytes, filename).
@@ -65,6 +65,41 @@ def prepare_for_slack(
 
     if engine_result.response_type == "table":
         text_to_check = format_table_for_slack(engine_result.value)
+        result = check_pii(
+            text_to_check,
+            messages=msg,
+            interpreted_query=interpreted_query,
+            use_llm=use_llm_pii,
+        )
+        if not result["safe"]:
+            return (result["output"], None, None)
+        message = result["output"]
+        # Attach full CSV when table has more than 20 rows
+        try:
+            import pandas as pd
+        except ImportError:
+            return (message, None, None)
+        df = engine_result.value
+        if isinstance(df, pd.DataFrame) and len(df) > 20:
+            csv_bytes = df.to_csv(index=False).encode("utf-8")
+            limit = SLACK_CSV_FILE_SIZE_LIMIT_BYTES
+            if len(csv_bytes) > limit:
+                last_newline = csv_bytes.rfind(b"\n", 0, limit + 1)
+                csv_bytes = (
+                    csv_bytes[: last_newline + 1]
+                    if last_newline != -1
+                    else csv_bytes[:limit]
+                )
+            csv_text = csv_bytes.decode("utf-8", errors="replace")
+            pii_result_csv = check_pii(
+                csv_text,
+                messages=msg,
+                interpreted_query=interpreted_query,
+                use_llm=use_llm_pii,
+            )
+            if pii_result_csv["safe"]:
+                return (message, csv_bytes, "data.csv")
+        return (message, None, None)
     elif engine_result.response_type == "csv_file":
         file_bytes, file_name = engine_result.value
         limit = SLACK_CSV_FILE_SIZE_LIMIT_BYTES
