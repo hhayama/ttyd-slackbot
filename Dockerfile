@@ -10,7 +10,7 @@ WORKDIR /app
 COPY pyproject.toml poetry.lock ./
 COPY src ./src
 RUN poetry config virtualenvs.create false \
-    && poetry install --without dev --no-interaction --no-ansi
+    && poetry install --no-interaction --no-ansi
 
 # Datasets (schema YAMLs) are read at runtime; default path is ./datasets.
 COPY datasets ./datasets
