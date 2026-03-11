@@ -9,6 +9,7 @@ result only (engine result formatted for Slack).
 
 import logging
 import os
+import re
 
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
@@ -80,6 +81,80 @@ def _get_app() -> App:
     return App(token=token)
 
 
+def _is_debug_query_errors() -> bool:
+    """Return True if step-level error messages should be shown in Slack (for debugging)."""
+    return os.environ.get("SLACK_DEBUG_QUERY_ERRORS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _sanitize_error_message(e: Exception) -> str:
+    """
+    Return a safe one-line error string for Slack: exception type + redacted message.
+    Never includes keys, tokens, or passwords.
+    """
+    msg = str(e).strip()
+    # Flatten to one line
+    msg = " ".join(msg.split())
+    # Redact Slack tokens (xoxb-, xapp-, xoxp- and following segment)
+    msg = re.sub(r"xox[bap]-[a-zA-Z0-9.-]+", "***", msg)
+    # Redact API key prefixes (OpenAI, etc.)
+    msg = re.sub(r"sk-[a-zA-Z0-9.-]+", "***", msg)
+    msg = re.sub(r"sk_proj-[a-zA-Z0-9.-]+", "***", msg)
+    # Redact password=value and api_key=value
+    msg = re.sub(r"password=[^\s&]+", "password=***", msg, flags=re.IGNORECASE)
+    msg = re.sub(r"api_key=[^\s&]+", "api_key=***", msg, flags=re.IGNORECASE)
+    # Redact :password@ or :user:password@ in URLs (keep :***@)
+    msg = re.sub(r":([^:@\s]{4,})@", ":***@", msg)
+    # Redact long token-like segments (20+ alphanumeric) after sensitive keywords
+    msg = re.sub(
+        r"(token|key|secret|password)\s*[=:]\s*[a-zA-Z0-9_-]{20,}",
+        r"\1=***",
+        msg,
+        flags=re.IGNORECASE,
+    )
+    # Truncate message part to avoid leakage at end
+    max_msg = 120
+    if len(msg) > max_msg:
+        msg = msg[: max_msg - 3].rstrip() + "..."
+    name = type(e).__name__
+    if msg:
+        return f"{name}: {msg}"
+    return name
+
+
+def _build_error_fallback(step_label: str, e: Exception) -> str:
+    """Build fallback message for Slack; when debug on include sanitized reason."""
+    if _is_debug_query_errors():
+        reason = _sanitize_error_message(e)
+        return f"Query failed while {step_label}. {reason}"
+    return "I couldn't run the query right now. Please try again later."
+
+
+def _post_fallback_and_append(
+    channel_id: str,
+    thread_ts: str,
+    message_ts: str | None,
+    context,
+    say,
+    fallback: str,
+) -> None:
+    """Update or post the fallback message to Slack and append to conversation memory."""
+    if message_ts and getattr(context, "client", None):
+        try:
+            context.client.chat_update(
+                channel=channel_id, ts=message_ts, text=fallback
+            )
+        except Exception as update_err:
+            logger.warning("chat_update failed on error path: %s", update_err)
+            say(fallback, thread_ts=thread_ts)
+    else:
+        say(fallback, thread_ts=thread_ts)
+    append_message(channel_id, thread_ts, "assistant", fallback)
+
+
 def _handle_message(event: dict, say, context) -> None:
     """Handle incoming message events. Ignores bot messages; runs guardrails; sends reply."""
     if event.get("bot_id"):
@@ -124,44 +199,103 @@ def _handle_message(event: dict, say, context) -> None:
     post_response = say(placeholder, thread_ts=thread_ts)
     message_ts = post_response.get("ts") if post_response else None
 
-    try:
-        agent = get_or_create_agent_for_thread(channel_id, thread_ts)
-        engine_result = run_query(agent, raw_query, is_follow_up=is_follow_up)
-        text, file_bytes, file_name = prepare_for_slack(
-            engine_result,
-            messages=messages,
-            interpreted_query=interpreted,
-        )
-        if message_ts and getattr(context, "client", None):
-            try:
-                context.client.chat_update(channel=channel_id, ts=message_ts, text=text)
-            except Exception as update_err:
-                logger.warning("chat_update failed, posting new message: %s", update_err)
-                say(text, thread_ts=thread_ts)
-        else:
-            say(text, thread_ts=thread_ts)
-        if file_bytes is not None and file_name is not None:
-            context.client.files_upload_v2(
-                channel=channel_id,
-                content=file_bytes,
-                filename=file_name,
-                thread_ts=thread_ts,
+    if _is_debug_query_errors():
+        # Step-wise try/except so we can report which step failed (with sanitized reason).
+        try:
+            agent = get_or_create_agent_for_thread(channel_id, thread_ts)
+        except Exception as e:
+            logger.exception("Engine failed for query %s: %s", raw_query[:100], e)
+            fallback = _build_error_fallback("creating the agent", e)
+            _post_fallback_and_append(
+                channel_id, thread_ts, message_ts, context, say, fallback
             )
-        append_message(channel_id, thread_ts, "assistant", text)
-    except Exception as e:
-        logger.exception("Engine failed for query %s: %s", raw_query[:100], e)
-        fallback = "I couldn't run the query right now. Please try again later."
-        if message_ts and getattr(context, "client", None):
-            try:
-                context.client.chat_update(
-                    channel=channel_id, ts=message_ts, text=fallback
+            return
+        try:
+            engine_result = run_query(agent, raw_query, is_follow_up=is_follow_up)
+        except Exception as e:
+            logger.exception("Engine failed for query %s: %s", raw_query[:100], e)
+            fallback = _build_error_fallback("running the query", e)
+            _post_fallback_and_append(
+                channel_id, thread_ts, message_ts, context, say, fallback
+            )
+            return
+        try:
+            text, file_bytes, file_name = prepare_for_slack(
+                engine_result,
+                messages=messages,
+                interpreted_query=interpreted,
+            )
+        except Exception as e:
+            logger.exception("Engine failed for query %s: %s", raw_query[:100], e)
+            fallback = _build_error_fallback("formatting the response", e)
+            _post_fallback_and_append(
+                channel_id, thread_ts, message_ts, context, say, fallback
+            )
+            return
+        try:
+            if message_ts and getattr(context, "client", None):
+                try:
+                    context.client.chat_update(
+                        channel=channel_id, ts=message_ts, text=text
+                    )
+                except Exception as update_err:
+                    logger.warning(
+                        "chat_update failed, posting new message: %s", update_err
+                    )
+                    say(text, thread_ts=thread_ts)
+            else:
+                say(text, thread_ts=thread_ts)
+            if file_bytes is not None and file_name is not None:
+                context.client.files_upload_v2(
+                    channel=channel_id,
+                    content=file_bytes,
+                    filename=file_name,
+                    thread_ts=thread_ts,
                 )
-            except Exception as update_err:
-                logger.warning("chat_update failed on error path: %s", update_err)
-                say(fallback, thread_ts=thread_ts)
-        else:
-            say(fallback, thread_ts=thread_ts)
-        append_message(channel_id, thread_ts, "assistant", fallback)
+            append_message(channel_id, thread_ts, "assistant", text)
+        except Exception as e:
+            logger.exception("Engine failed for query %s: %s", raw_query[:100], e)
+            fallback = _build_error_fallback("sending the reply", e)
+            _post_fallback_and_append(
+                channel_id, thread_ts, message_ts, context, say, fallback
+            )
+            return
+    else:
+        # Single try/except; generic fallback (no step or error detail in Slack).
+        try:
+            agent = get_or_create_agent_for_thread(channel_id, thread_ts)
+            engine_result = run_query(agent, raw_query, is_follow_up=is_follow_up)
+            text, file_bytes, file_name = prepare_for_slack(
+                engine_result,
+                messages=messages,
+                interpreted_query=interpreted,
+            )
+            if message_ts and getattr(context, "client", None):
+                try:
+                    context.client.chat_update(
+                        channel=channel_id, ts=message_ts, text=text
+                    )
+                except Exception as update_err:
+                    logger.warning(
+                        "chat_update failed, posting new message: %s", update_err
+                    )
+                    say(text, thread_ts=thread_ts)
+            else:
+                say(text, thread_ts=thread_ts)
+            if file_bytes is not None and file_name is not None:
+                context.client.files_upload_v2(
+                    channel=channel_id,
+                    content=file_bytes,
+                    filename=file_name,
+                    thread_ts=thread_ts,
+                )
+            append_message(channel_id, thread_ts, "assistant", text)
+        except Exception as e:
+            logger.exception("Engine failed for query %s: %s", raw_query[:100], e)
+            fallback = _build_error_fallback("", e)  # generic message when debug off
+            _post_fallback_and_append(
+                channel_id, thread_ts, message_ts, context, say, fallback
+            )
 
 
 def run() -> None:

@@ -14,6 +14,7 @@ Load from `.env` in the project root (see [.env.example](.env.example)).
 | `DATABASE_URL` or `DB_*` | For data queries | Either `DATABASE_URL` or `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` (and optionally `DB_PORT`). Required to answer data questions and for semantic layer refresh. |
 | `SEMANTIC_LAYER_ORG` | No | Organization name in semantic layer path (default: `ttyd`). |
 | `DATASETS_DIR` | No | Root directory for datasets (default: `./datasets`). |
+| `SLACK_DEBUG_QUERY_ERRORS` | No | Set to `1` to see step-level, sanitized error messages in Slack when a query fails (no keys/tokens). |
 
 For Socket Mode (default): enable it in your Slack app settings and set both Slack tokens. No public URL is required.
 
@@ -50,7 +51,7 @@ You can run the bot as a **Background Worker** on [Render](https://render.com/) 
    - **For data queries:** `DATABASE_URL` (or `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`)
    - **Optional:** `SEMANTIC_LAYER_ORG` (default: `ttyd`), `DATASETS_DIR` (default: `./datasets` in the container)
 
-Variable names and descriptions match [.env.example](.env.example). After saving, deploy; the worker runs `ttyd-slackbot` and stays up (Slack Socket Mode).
+Variable names and descriptions match [.env.example](.env.example). After saving, deploy; the worker runs `ttyd-slackbot` and stays up (Slack Socket Mode). To debug query failures (e.g. wrong credentials or setup), set `SLACK_DEBUG_QUERY_ERRORS=1` in the worker environment; the bot will post which step failed and a short sanitized error message in Slack (no keys or tokens are shown).
 
 ## Development
 
