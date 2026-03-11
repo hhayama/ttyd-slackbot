@@ -87,8 +87,8 @@ def _is_debug_query_errors() -> bool:
     return val in ("1", "true", "yes", "on", "enabled")
 
 
-def _redact_message(msg: str, max_len: int = 120) -> str:
-    """Flatten, redact secrets, and truncate a single message string."""
+def _redact_message(msg: str, max_len: int | None = None) -> str:
+    """Flatten and redact secrets in a message string. Optionally truncate (max_len=None = no truncation)."""
     s = " ".join(msg.strip().split())
     s = re.sub(r"xox[bap]-[a-zA-Z0-9.-]+", "***", s)
     s = re.sub(r"sk-[a-zA-Z0-9.-]+", "***", s)
@@ -102,7 +102,7 @@ def _redact_message(msg: str, max_len: int = 120) -> str:
         s,
         flags=re.IGNORECASE,
     )
-    if len(s) > max_len:
+    if max_len is not None and len(s) > max_len:
         s = s[: max_len - 3].rstrip() + "..."
     return s
 
@@ -110,15 +110,15 @@ def _redact_message(msg: str, max_len: int = 120) -> str:
 def _sanitize_error_message(e: Exception) -> str:
     """
     Return a safe one-line error string for Slack: exception type + redacted message.
-    Includes chained cause (e.__cause__ or e.__context__) when present so the real
-    reason (e.g. authentication failed) is visible. Never includes keys, tokens, or passwords.
+    Includes chained cause when present. No truncation so the full (redacted) error is visible.
+    Never includes keys, tokens, or passwords.
     """
-    msg = _redact_message(str(e), max_len=120)
+    msg = _redact_message(str(e), max_len=None)
     name = type(e).__name__
     line = f"{name}: {msg}" if msg else name
     cause = getattr(e, "__cause__", None) or getattr(e, "__context__", None)
     if cause is not None and cause is not e:
-        cause_msg = _redact_message(str(cause), max_len=100)
+        cause_msg = _redact_message(str(cause), max_len=None)
         cause_name = type(cause).__name__
         line += f" Caused by: {cause_name}: {cause_msg}" if cause_msg else f" Caused by: {cause_name}"
     return line
