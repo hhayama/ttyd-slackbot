@@ -2,6 +2,12 @@
 
 A Slack bot that receives data-related questions and returns verified answers (and optional diagrams). Users ask in Slack; the bot checks data availability via a semantic layer, runs queries with PandasAI v3, and posts verified answers and optional diagrams, with input/output guardrails and per-thread conversation memory. See [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md) for architecture and scope.
 
+## Installing the App on Slack
+
+To add the bot to your Slack workspace: open **Apps** in the Slack sidebar (or **Browse Slack Apps**), filter to **Internal** or “Your workspace apps,” then find **Analyst Agent by Hiroki** and add or open it.
+
+When you message the app, it creates a thread and replies there. That thread keeps memory of the chat, so you can have a continuous conversation in the same thread.
+
 ## Environment variables
 
 Load from `.env` in the project root (see [.env.example](.env.example)).
