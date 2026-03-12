@@ -16,6 +16,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse, unquote
 
 import yaml
 
@@ -124,6 +125,45 @@ def _resolve_placeholders(obj: Any) -> Any:
     return obj
 
 
+def _inject_connection_from_url(data: dict, url: str) -> None:
+    """
+    If the schema has a postgres connection with an empty password, fill it (and
+    host/port/user/database) from DATABASE_URL. Mutates data in place.
+    This allows Render (and others) to set only DATABASE_URL; otherwise
+    ${DB_PASSWORD} resolves to '' and we get "no password supplied".
+    """
+    source = data.get("source") or {}
+    if not isinstance(source, dict):
+        return
+    conn = source.get("connection")
+    if not isinstance(conn, dict):
+        return
+    if source.get("type") != "postgres":
+        return
+    password = (conn.get("password") or "").strip()
+    if password:
+        return
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("postgres", "postgresql"):
+            return
+        host = (parsed.hostname or "").strip()
+        port = parsed.port if parsed.port is not None else 5432
+        database = (parsed.path or "").lstrip("/").split("/")[0] or ""
+        user = (unquote(parsed.username or "")) or ""
+        raw_password = parsed.password
+        password = unquote(raw_password) if raw_password else ""
+        if not all([host, database, user]):
+            return
+        conn["host"] = host
+        conn["port"] = port
+        conn["database"] = database
+        conn["user"] = user
+        conn["password"] = password
+    except Exception:
+        pass
+
+
 def _build_resolved_schemas_dir(datasets_dir: Path, org: str, names: list[str]) -> Path:
     """
     Write resolved schema.yaml files (with ${VAR} replaced from env) to a temp dir.
@@ -133,6 +173,7 @@ def _build_resolved_schemas_dir(datasets_dir: Path, org: str, names: list[str]) 
     """
     tmpdir = Path(tempfile.mkdtemp(prefix="ttyd_schemas_"))
     try:
+        database_url = os.environ.get("DATABASE_URL", "").strip()
         for name in names:
             src = datasets_dir / org / name / "schema.yaml"
             with open(src, encoding="utf-8") as f:
@@ -140,6 +181,8 @@ def _build_resolved_schemas_dir(datasets_dir: Path, org: str, names: list[str]) 
             if data is None:
                 continue
             resolved = _resolve_placeholders(data)
+            if database_url and isinstance(resolved, dict):
+                _inject_connection_from_url(resolved, database_url)
             dest_dir = tmpdir / "datasets" / org / name
             dest_dir.mkdir(parents=True)
             with open(dest_dir / "schema.yaml", "w", encoding="utf-8") as f:
