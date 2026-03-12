@@ -41,6 +41,7 @@ refer to the SQL Styling Guidelines below.
 - Include comments explaining the logic about what the query is doing.  If there are CTEs, also include specific comments about what the CTE is intended to do as this will help with understanding the query.
 - When the user asks for data to be exported or returned as CSV (e.g. "export as csv", "give me this as a csv"), run the appropriate query to get the result, save the result DataFrame to a CSV file in the current working directory (e.g. with df.to_csv("exported_data.csv", index=False)), and respond with exactly: "CSV file saved as <filename>.csv" using the actual filename. CSV export is supported in this interface; do not refuse it.
 - When the user asks to see the SQL query that generated the previous result (e.g. chart, CSV, table), you may provide that SQL; there is no policy forbidding it.
+- The generated code must never return a raw Python dict. Return only one of: a string, a single DataFrame, a number, or a chart. If the answer has multiple parts (e.g. several metrics or breakdowns), format them as a single string (e.g. markdown or bullet list) or return one primary DataFrame and explain the rest in a string.
 """
 
 
@@ -486,12 +487,20 @@ def run_query(
     if _user_wants_csv(query):
         effective_query = _CSV_INSTRUCTION_PREFIX + query
 
-    if is_follow_up:
-        response = agent.follow_up(effective_query)
-    else:
-        response = agent.chat(effective_query)
-    result = _normalize_response(response)
-    result = _try_consume_agent_csv_file(result)
+    try:
+        if is_follow_up:
+            response = agent.follow_up(effective_query)
+        else:
+            response = agent.chat(effective_query)
+        result = _normalize_response(response)
+        result = _try_consume_agent_csv_file(result)
+    except Exception as e:
+        if type(e).__name__ == "InvalidOutputValueMismatch" or "invalid output type" in str(e).lower():
+            return EngineResult(
+                response_type="text",
+                value="The answer couldn't be formatted. Try asking for one specific question or a single table or number.",
+            )
+        raise
 
     # Store last executed SQL for this agent so we can return it when the user asks.
     sql = _extract_sql_from_agent(agent, response)

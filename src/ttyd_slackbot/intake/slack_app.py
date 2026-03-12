@@ -129,8 +129,26 @@ def _sanitize_error_message(e: Exception) -> str:
     return line
 
 
+def _is_invalid_output_type_error(e: Exception, max_depth: int = 5) -> bool:
+    """True if the exception chain is InvalidOutputValueMismatch / invalid output type (e.g. dict)."""
+    seen = set()
+    current = e
+    depth = 0
+    while current is not None and id(current) not in seen and depth < max_depth:
+        seen.add(id(current))
+        depth += 1
+        if type(current).__name__ == "InvalidOutputValueMismatch":
+            return True
+        if "invalid output type" in str(current).lower():
+            return True
+        current = getattr(current, "__cause__", None) or getattr(
+            current, "__context__", None
+        )
+    return False
+
+
 def _hint_for_exception(e: Exception, max_depth: int = 5) -> str:
-    """If the exception chain suggests credentials/connectivity, return a short hint."""
+    """If the exception chain suggests credentials/connectivity or output type, return a short hint."""
     keywords = (
         "authentication failed",
         "password authentication",
@@ -151,6 +169,8 @@ def _hint_for_exception(e: Exception, max_depth: int = 5) -> str:
         text = str(current).lower()
         if any(kw in text for kw in keywords):
             return " Likely cause: database credentials or connectivity (check DATABASE_URL or DB_* and that the DB is reachable)."
+        if "invalid output type" in text or "invalidoutputvaluemismatch" in text:
+            return " Try asking for one specific question or a single table or number."
         current = getattr(current, "__cause__", None) or getattr(
             current, "__context__", None
         )
@@ -159,6 +179,9 @@ def _hint_for_exception(e: Exception, max_depth: int = 5) -> str:
 
 def _build_error_fallback(step_label: str, e: Exception) -> str:
     """Build fallback message for Slack; when debug on include sanitized reason and optional hint."""
+    if _is_invalid_output_type_error(e):
+        hint = _hint_for_exception(e)
+        return "The answer couldn't be formatted." + (hint if hint else " Try asking for one specific question or a single table or number.")
     if _is_debug_query_errors():
         reason = _sanitize_error_message(e)
         hint = _hint_for_exception(e)

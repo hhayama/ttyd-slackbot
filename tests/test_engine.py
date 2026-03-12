@@ -61,6 +61,18 @@ def test_run_query_uses_follow_up_when_is_follow_up():
     mock_agent.chat.assert_not_called()
 
 
+def test_run_query_returns_friendly_message_on_invalid_output_type():
+    """When agent raises InvalidOutputValueMismatch or 'invalid output type', return friendly text."""
+    mock_agent = MagicMock()
+    InvalidOutputValueMismatch = type("InvalidOutputValueMismatch", (ValueError,), {})
+    mock_agent.follow_up.side_effect = InvalidOutputValueMismatch("Invalid output type: dict")
+    mock_agent.chat.side_effect = InvalidOutputValueMismatch("Invalid output type: dict")
+    result = run_query(mock_agent, "what else about active users?", is_follow_up=True)
+    assert result.response_type == "text"
+    assert "couldn't be formatted" in result.value
+    assert "one specific question" in result.value or "single table" in result.value
+
+
 def test_get_or_create_agent_for_thread_creates_once_then_reuses():
     """get_or_create_agent_for_thread returns same agent for same thread (no DB in test)."""
     from ttyd_slackbot.engine import runner as runner_mod

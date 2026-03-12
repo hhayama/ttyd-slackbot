@@ -3,7 +3,38 @@
 from unittest.mock import MagicMock, patch
 
 from ttyd_slackbot.engine import EngineResult
-from ttyd_slackbot.intake.slack_app import _handle_app_mention, _handle_message
+from ttyd_slackbot.intake.slack_app import (
+    _build_error_fallback,
+    _handle_app_mention,
+    _handle_message,
+    _is_invalid_output_type_error,
+)
+
+
+def test_is_invalid_output_type_error_true_for_invalid_output_type():
+    """_is_invalid_output_type_error returns True for exception with 'Invalid output type' in message."""
+    err = ValueError("Invalid output type: dict")
+    assert _is_invalid_output_type_error(err) is True
+
+
+def test_is_invalid_output_type_error_true_for_invalid_output_value_mismatch():
+    """_is_invalid_output_type_error returns True for exception type named InvalidOutputValueMismatch."""
+    InvalidOutputValueMismatch = type("InvalidOutputValueMismatch", (ValueError,), {})
+    assert _is_invalid_output_type_error(InvalidOutputValueMismatch("x")) is True
+
+
+def test_is_invalid_output_type_error_false_for_other():
+    """_is_invalid_output_type_error returns False for unrelated exceptions."""
+    assert _is_invalid_output_type_error(ValueError("connection refused")) is False
+
+
+def test_build_error_fallback_invalid_output_type_returns_friendly_message():
+    """_build_error_fallback returns user-friendly message for Invalid output type error (no raw exception)."""
+    InvalidOutputValueMismatch = type("InvalidOutputValueMismatch", (ValueError,), {})
+    err = InvalidOutputValueMismatch("Invalid output type: dict")
+    msg = _build_error_fallback("running the query", err)
+    assert "couldn't be formatted" in msg
+    assert "Query failed while" not in msg
 
 
 def test_handle_message_replies_with_output_layer_only_when_guardrails_pass():
