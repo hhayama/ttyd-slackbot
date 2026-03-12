@@ -9,6 +9,7 @@ from ttyd_slackbot.engine import EngineResult
 from ttyd_slackbot.output.format_table import format_table_for_slack
 from ttyd_slackbot.output.pii_check import PII_BLOCK_MESSAGE, check_pii, format_pii_block_message
 from ttyd_slackbot.output.prepare import (
+    CSV_ATTACHED_MESSAGE_TEMPLATE,
     CSV_TRUNCATION_MESSAGE,
     SLACK_CSV_FILE_SIZE_LIMIT_BYTES,
     prepare_for_slack,
@@ -155,19 +156,34 @@ def test_prepare_for_slack_table_formats_then_checks_pii():
     assert "col" in call_arg and "1" in call_arg
 
 
-def test_prepare_for_slack_table_attaches_csv_when_over_20_rows():
-    """prepare_for_slack returns (message, csv_bytes, 'data.csv') when table has >20 rows and PII check passes."""
-    df = pd.DataFrame({"a": range(25), "b": [f"row{i}" for i in range(25)]})
+def test_prepare_for_slack_table_20_rows_no_file():
+    """prepare_for_slack returns formatted table and no file when table has exactly 20 rows."""
+    df = pd.DataFrame({"x": range(20), "y": range(20, 40)})
     engine_result = EngineResult(response_type="table", value=df)
     formatted = format_table_for_slack(df)
     with patch("ttyd_slackbot.output.prepare.check_pii") as mock_check:
+        mock_check.return_value = {"safe": True, "output": formatted}
+        text, file_bytes, file_name = prepare_for_slack(engine_result, messages=[], interpreted_query=None)
+    assert "x" in text and "y" in text
+    assert "0" in text
+    assert file_bytes is None
+    assert file_name is None
+
+
+def test_prepare_for_slack_table_attaches_csv_when_over_20_rows():
+    """prepare_for_slack returns short message and csv_bytes (no inline table) when table has >20 rows and PII check passes."""
+    df = pd.DataFrame({"a": range(25), "b": [f"row{i}" for i in range(25)]})
+    engine_result = EngineResult(response_type="table", value=df)
+    short_msg = CSV_ATTACHED_MESSAGE_TEMPLATE.format(n=25)
+    with patch("ttyd_slackbot.output.prepare.check_pii") as mock_check:
         mock_check.side_effect = [
-            {"safe": True, "output": formatted},
             {"safe": True, "output": df.to_csv(index=False)},
+            {"safe": True, "output": short_msg},
         ]
         text, file_bytes, file_name = prepare_for_slack(engine_result, messages=[], interpreted_query=None)
-    assert "Showing first 20 of 25" in text
-    assert "CSV" in text or "attached" in text
+    assert "Full data attached as CSV (25 rows)." in text
+    assert "Showing first 20" not in text
+    assert "row0" not in text
     assert file_bytes is not None
     assert len(file_bytes) > 0
     assert file_name == "data.csv"
