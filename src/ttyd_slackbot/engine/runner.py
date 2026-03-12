@@ -241,7 +241,7 @@ def create_agent(
     from pandasai_litellm.litellm import LiteLLM
 
     llm = LiteLLM(model="gpt-4.1-mini", api_key=api_key)
-    pai.config.set({"llm": llm, "max_retries": 5})
+    pai.config.set({"llm": llm, "max_retries": 5, "temperature": 0,})
 
     import shutil
 
