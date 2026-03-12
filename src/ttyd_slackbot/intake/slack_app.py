@@ -107,6 +107,11 @@ def _redact_message(msg: str, max_len: int | None = None) -> str:
     return s
 
 
+def _strip_leading_mention(text: str) -> str:
+    """Remove leading <@USER_ID> (and surrounding whitespace) from app_mention text."""
+    return re.sub(r"^\s*<@[A-Za-z0-9]+>\s*", "", text).strip()
+
+
 def _sanitize_error_message(e: Exception) -> str:
     """
     Return a safe one-line error string for Slack: exception type + redacted message.
@@ -181,6 +186,13 @@ def _post_fallback_and_append(
     else:
         say(fallback, thread_ts=thread_ts)
     append_message(channel_id, thread_ts, "assistant", fallback)
+
+
+def _handle_app_mention(event: dict, say, context) -> None:
+    """Handle app_mention: strip leading @mention from text and delegate to _handle_message."""
+    text = event.get("text") or ""
+    event["text"] = _strip_leading_mention(text)
+    _handle_message(event, say, context)
 
 
 def _handle_message(event: dict, say, context) -> None:
@@ -346,6 +358,7 @@ def run() -> None:
         )
     app = _get_app()
     app.event("message")(_handle_message)
+    app.event("app_mention")(_handle_app_mention)
 
     app_token = os.environ.get("SLACK_APP_TOKEN")
     if not app_token:

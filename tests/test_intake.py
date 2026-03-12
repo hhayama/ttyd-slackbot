@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 from ttyd_slackbot.engine import EngineResult
-from ttyd_slackbot.intake.slack_app import _handle_message
+from ttyd_slackbot.intake.slack_app import _handle_app_mention, _handle_message
 
 
 def test_handle_message_replies_with_output_layer_only_when_guardrails_pass():
@@ -53,6 +53,47 @@ def test_handle_message_replies_with_output_layer_only_when_guardrails_pass():
     mock_run_query.assert_called_once_with(
         mock_agent, "What is total revenue?", is_follow_up=False
     )
+
+
+def test_handle_app_mention_strips_mention_and_delegates_to_handle_message():
+    """When app_mention event has <@U123> prefix, handler strips it and runs same flow with stripped text."""
+    event = {
+        "text": "<@U123> what is revenue?",
+        "channel": "C99",
+        "ts": "111.222",
+        "user": "U42",
+    }
+    mock_say = MagicMock()
+    mock_context = MagicMock()
+    mock_context.client.users_info.return_value = {
+        "user": {"profile": {"display_name": "Jane"}, "real_name": "Jane Doe"},
+    }
+    guardrail_result = {
+        "allowed": True,
+        "reason": None,
+        "interpreted_query": "Revenue from payments.",
+        "raw_query": "what is revenue?",
+    }
+    mock_agent = MagicMock()
+    engine_result = EngineResult(response_type="text", value="Revenue is $10,000.")
+    with patch("ttyd_slackbot.intake.slack_app.logger"), patch(
+        "ttyd_slackbot.intake.slack_app.check_guardrails", return_value=guardrail_result
+    ), patch(
+        "ttyd_slackbot.intake.slack_app.get_or_create_agent_for_thread",
+        return_value=mock_agent,
+    ), patch(
+        "ttyd_slackbot.intake.slack_app.run_query",
+        return_value=engine_result,
+    ) as mock_run_query, patch(
+        "ttyd_slackbot.intake.slack_app.append_message",
+    ):
+        _handle_app_mention(event, mock_say, mock_context)
+    assert event["text"] == "what is revenue?"
+    mock_run_query.assert_called_once_with(
+        mock_agent, "what is revenue?", is_follow_up=False
+    )
+    mock_say.assert_called()
+    mock_context.client.chat_update.assert_called_once()
 
 
 def test_handle_message_when_guardrails_block_says_reason():
